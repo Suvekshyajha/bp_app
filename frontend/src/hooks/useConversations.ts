@@ -1,83 +1,68 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Conversation } from "../types";
-import { safeGetJson, safeRemove, safeSetJson } from "../services/storage";
 
-const CONVERSATIONS_KEY = "day2.conversations";
+import { useCallback, useState } from "react";
+import type { Conversation } from "../types";
+import { safeGetJson, safeSetJson } from "../services/storage";
+import { getIdentity } from "../services/identity";
 
 function createConversationRecord(): Conversation {
   const now = new Date().toISOString();
-  return { id: crypto.randomUUID(), title: "New chat", createdAt: now, updatedAt: now };
-}
 
-function readConversations(): Conversation[] {
-  const saved = safeGetJson<Conversation[]>(CONVERSATIONS_KEY);
-  if (!Array.isArray(saved)) return [createConversationRecord()];
-  const valid = saved.filter((item) => item && typeof item.id === "string" && typeof item.title === "string");
-  return valid.length > 0 ? valid : [createConversationRecord()];
+  return {
+    id: getIdentity()?.userId ?? "default",
+    title: "My Chat",
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 export function useConversations() {
-  const [initialState] = useState(() => {
-    const initialConversations = readConversations();
-    return {
-      conversations: initialConversations,
-      selectedId: initialConversations[0]?.id ?? "",
-    };
+  const [conversation] = useState<Conversation>(() => {
+    const userId = getIdentity()?.userId ?? "default";
+    const saved = safeGetJson<Conversation>("day2.conversation." + userId);
+
+    return saved ?? createConversationRecord();
   });
-  const [conversations, setConversations] = useState<Conversation[]>(initialState.conversations);
-  const [selectedId, setSelectedId] = useState<string>(initialState.selectedId);
 
-  useEffect(() => {
-    safeSetJson(CONVERSATIONS_KEY, conversations);
-  }, [conversations]);
+  const [updatedConversation, setUpdatedConversation] =
+    useState<Conversation>(conversation);
 
-  const sortedConversations = useMemo(
-    () => [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-    [conversations],
+  const saveConversation = useCallback((updated: Conversation) => {
+    setUpdatedConversation(updated);
+    const userId = getIdentity()?.userId ?? "default";
+    safeSetJson("day2.conversation." + userId, updated);
+  }, []);
+
+  const touchConversation = useCallback(
+    (_id: string, firstMessage?: string) => {
+      const title =
+        firstMessage?.replace(/\s+/g, " ").trim().slice(0, 40);
+
+      saveConversation({
+        ...updatedConversation,
+        title:
+          updatedConversation.title === "My Chat" && title
+            ? title
+            : updatedConversation.title,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    [saveConversation, updatedConversation],
   );
 
+  const selectConversation = useCallback((_id: string) => {}, []);
+
   const createConversation = useCallback(() => {
-    const conversation = createConversationRecord();
-    setConversations((current) => [conversation, ...current]);
-    setSelectedId(conversation.id);
-    return conversation.id;
-  }, []);
+    return updatedConversation.id;
+  }, [updatedConversation.id]);
 
-  const selectConversation = useCallback((id: string) => {
-    setSelectedId(id);
+  const deleteConversation = useCallback((_id: string) => {
+    // The backend owns the persistent conversation.
+    // Do not delete it from the browser.
   }, []);
-
-  const touchConversation = useCallback((id: string, firstMessage?: string) => {
-    const title = firstMessage?.replace(/\s+/g, " ").trim().slice(0, 40);
-    setConversations((current) => current.map((conversation) => {
-      if (conversation.id !== id) return conversation;
-      return {
-        ...conversation,
-        title: conversation.title === "New chat" && title ? title : conversation.title,
-        updatedAt: new Date().toISOString(),
-      };
-    }));
-  }, []);
-
-  const deleteConversation = useCallback((id: string) => {
-    safeRemove("day2.messages." + id);
-    const remaining = conversations.filter((conversation) => conversation.id !== id);
-    if (remaining.length === 0) {
-      const next = createConversationRecord();
-      setConversations([next]);
-      setSelectedId(next.id);
-      return;
-    }
-    setConversations(remaining);
-    if (selectedId === id) {
-      const next = [...remaining].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-      setSelectedId(next.id);
-    }
-  }, [conversations, selectedId]);
 
   return {
-    conversations: sortedConversations,
-    selectedId,
+    conversations: [updatedConversation],
+    selectedId: updatedConversation.id,
     createConversation,
     selectConversation,
     touchConversation,
