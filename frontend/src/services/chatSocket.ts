@@ -1,11 +1,10 @@
-
 import { CHAT_SOCKET_URL } from "../config";
 import type { ChatRequest } from "../types";
 
 export interface SocketHandlers {
   onOpen: () => void;
   onData: (data: unknown) => void;
-  onClose: () => void;
+  onClose: (event: CloseEvent) => void;
   onError: () => void;
 }
 
@@ -13,14 +12,18 @@ export function connectChatSocket(
   token: string,
   handlers: SocketHandlers,
 ): WebSocket {
-  const socketUrl = `${CHAT_SOCKET_URL}?token=${encodeURIComponent(token)}`;
-  const socket = new WebSocket(socketUrl);
+  // URL() keeps the token attached correctly even if the base URL already has a query string.
+  const url = new URL(CHAT_SOCKET_URL);
+  url.searchParams.set("token", token);
+  const socket = new WebSocket(url.toString());
 
   socket.addEventListener("open", handlers.onOpen);
   socket.addEventListener("message", (event: MessageEvent<unknown>) =>
     handlers.onData(event.data),
   );
-  socket.addEventListener("close", handlers.onClose);
+  socket.addEventListener("close", (event: CloseEvent) =>
+    handlers.onClose(event),
+  );
   socket.addEventListener("error", handlers.onError);
 
   return socket;

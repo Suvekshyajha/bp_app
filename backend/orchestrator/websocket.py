@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import uuid
@@ -18,16 +17,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Custom close code: the frontend treats it as "log in again"
+WS_AUTH_FAILED = 4401
+
 
 @router.websocket("/ws/chat")
 async def chat(websocket: WebSocket):
 
-    # 1. Get and verify login token
+    # 1. Accept first so the browser can read our close code.
+    #    (Closing before accept() makes the browser see a bare HTTP 403.)
+    await websocket.accept()
+
+    # 2. Get and verify login token
     token = websocket.query_params.get("token")
 
     if not token:
         logger.warning("WebSocket rejected: token is missing.")
-        await websocket.close(code=1008)
+        await websocket.close(code=WS_AUTH_FAILED, reason="Token missing")
         return
 
     try:
@@ -35,11 +41,11 @@ async def chat(websocket: WebSocket):
         logger.info("WebSocket JWT verified for user: %s", user_id)
 
     except Exception:
-        logger.exception("WebSocket rejected: JWT verification failed.")
-        await websocket.close(code=1008)
+        logger.warning("WebSocket rejected: invalid or expired token.")
+        await websocket.close(code=WS_AUTH_FAILED, reason="Invalid or expired token")
         return
 
-    # 2. Check whether user exists
+    # 3. Check whether user exists
     db: Session = SessionLocal()
 
     try:
@@ -49,10 +55,10 @@ async def chat(websocket: WebSocket):
 
         if not user:
             logger.warning("WebSocket rejected: user does not exist.")
-            await websocket.close(code=1008)
+            await websocket.close(code=WS_AUTH_FAILED, reason="User not found")
             return
 
-        # 3. Get or create the user's conversation
+        # 4. Get or create the user's conversation
         conversation_id = str(uuid.uuid5(
             uuid.NAMESPACE_DNS,
             f"day2-chat-{user_id}"
@@ -72,9 +78,6 @@ async def chat(websocket: WebSocket):
 
             db.add(conversation)
             db.commit()
-
-        # 4. Accept WebSocket connection
-        await websocket.accept()
 
         logger.info("WebSocket connected for user: %s", user_id)
 

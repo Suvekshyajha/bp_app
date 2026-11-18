@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Identity } from "../types";
 import { getHealth } from "../api";
@@ -29,7 +28,7 @@ export function ChatPage({
 
   const { messages, addMessage, updateMessage } = useChatMessages(selectedId);
 
-  const { status, send } = useChatSocket(identity.token);
+  const { status, send } = useChatSocket(identity.token, onLogout);
 
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);

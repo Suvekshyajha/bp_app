@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { connectChatSocket, sendChatRequest } from "../services/chatSocket";
 import type { ChatRequest, ChatResponse, ConnectionStatus } from "../types";
@@ -10,18 +9,27 @@ interface PendingRequest {
 }
 
 const REQUEST_TIMEOUT_MS = 70_000;
+const WS_AUTH_FAILED = 4401; // must match backend/orchestrator/websocket.py
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error("The chat request failed.");
 }
 
-export function useChatSocket(token: string): {
+export function useChatSocket(
+  token: string,
+  onAuthError?: () => void,
+): {
   status: ConnectionStatus;
   send: (request: ChatRequest) => Promise<ChatResponse>;
 } {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<PendingRequest | null>(null);
+  const onAuthErrorRef = useRef(onAuthError);
+
+  useEffect(() => {
+    onAuthErrorRef.current = onAuthError;
+  }, [onAuthError]);
 
   const send = useCallback((request: ChatRequest) => {
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -133,11 +141,19 @@ export function useChatSocket(token: string): {
             }
           },
 
-          onClose: () => {
+          onClose: (event) => {
             if (stopped || socketRef.current !== socket) return;
 
             socketRef.current = null;
             rejectPending("The chat connection closed before a reply arrived. You can retry.");
+
+            // Token missing/invalid/expired: retrying with the same token can never work.
+            if (event.code === WS_AUTH_FAILED) {
+              stopped = true;
+              setStatus("offline");
+              onAuthErrorRef.current?.();
+              return;
+            }
 
             const delay = Math.min(1000 * Math.pow(2, attempt), 10_000);
             attempt += 1;
