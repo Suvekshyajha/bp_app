@@ -247,6 +247,10 @@ If you edit `backend/proto/retriever.proto`, regenerate the Python files into **
 
 powershell
 python -m grpc_tools.protoc -I backend/proto --python_out=backend/retriever --grpc_python_out=backend/retriever backend/proto/retriever.proto
+python -m grpc_tools.protoc -I backend/proto --python_out=backend/orchestrator --grpc_python_out=backend/orchestrator backend/proto/retriever.proto
+
+
+Then restart both services.
 
 ##screenshot
 login:
@@ -257,7 +261,3 @@ chat app:
 <img width="1887" height="953" alt="image" src="https://github.com/user-attachments/assets/32d0b6b5-d949-4494-bea3-a4cdd948ab51" />
 
 
-python -m grpc_tools.protoc -I backend/proto --python_out=backend/orchestrator --grpc_python_out=backend/orchestrator backend/proto/retriever.proto
-```
-
-Then restart both services.
