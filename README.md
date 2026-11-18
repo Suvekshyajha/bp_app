@@ -245,7 +245,7 @@ Then open **http://localhost:5173** and create an account. The frontend must run
 
 If you edit `backend/proto/retriever.proto`, regenerate the Python files into **both** services from the project root:
 
-```powershell
+powershell
 python -m grpc_tools.protoc -I backend/proto --python_out=backend/retriever --grpc_python_out=backend/retriever backend/proto/retriever.proto
 
 ##screenshot
