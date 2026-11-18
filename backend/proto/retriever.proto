@@ -1,0 +1,40 @@
+
+syntax = "proto3";
+
+package retriever;
+
+import "google/protobuf/struct.proto";
+
+service RetrieverService {
+    rpc RetrieveData (RetrieveRequest) returns (RetrieveResponse);
+    rpc StoreMessage (StoreMessageRequest) returns (StoreMessageResponse);
+}
+
+
+message RetrieveRequest {
+    string query = 1;
+    string user_id = 2;
+    int32 limit = 3;
+}
+
+message RetrievedChunk {
+    string id = 1;
+    float score = 2;
+    google.protobuf.Struct payload = 3;
+}
+
+message RetrieveResponse {
+    repeated RetrievedChunk results = 1;
+}
+
+
+message StoreMessageRequest {
+    string user_id = 1;
+    string conversation_id = 2;
+    string role = 3;
+    string content = 4;
+}
+
+message StoreMessageResponse {
+    string message_id = 1;
+}
