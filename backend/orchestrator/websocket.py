@@ -1,6 +1,7 @@
 
 import asyncio
 import logging
+import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
@@ -11,8 +12,6 @@ from llm import generate_response
 from database import SessionLocal
 from models import User, Conversation, Message
 from auth import verify_access_token
-
-import uuid
 
 
 logger = logging.getLogger(__name__)
@@ -27,12 +26,16 @@ async def chat(websocket: WebSocket):
     token = websocket.query_params.get("token")
 
     if not token:
+        logger.warning("WebSocket rejected: token is missing.")
         await websocket.close(code=1008)
         return
 
     try:
         user_id = verify_access_token(token)
+        logger.info("WebSocket JWT verified for user: %s", user_id)
+
     except Exception:
+        logger.exception("WebSocket rejected: JWT verification failed.")
         await websocket.close(code=1008)
         return
 
@@ -45,6 +48,7 @@ async def chat(websocket: WebSocket):
         ).first()
 
         if not user:
+            logger.warning("WebSocket rejected: user does not exist.")
             await websocket.close(code=1008)
             return
 
@@ -69,9 +73,12 @@ async def chat(websocket: WebSocket):
             db.add(conversation)
             db.commit()
 
+        # 4. Accept WebSocket connection
         await websocket.accept()
 
-        # 4. Receive chat messages
+        logger.info("WebSocket connected for user: %s", user_id)
+
+        # 5. Receive chat messages
         while True:
 
             try:
@@ -100,7 +107,7 @@ async def chat(websocket: WebSocket):
             query = query.strip()
 
             try:
-                # 5. Retrieve relevant past messages from Qdrant
+                # 6. Retrieve relevant past messages from Qdrant
                 results = await asyncio.to_thread(
                     retrieve,
                     query,
@@ -108,7 +115,7 @@ async def chat(websocket: WebSocket):
                     5,
                 )
 
-                # 6. Save user message in SQLite
+                # 7. Save user message in SQLite
                 user_message = Message(
                     id=str(uuid.uuid4()),
                     conversation_id=conversation_id,
@@ -119,7 +126,7 @@ async def chat(websocket: WebSocket):
                 db.add(user_message)
                 db.commit()
 
-                # 7. Store user message in Qdrant
+                # 8. Store user message in Qdrant
                 await asyncio.to_thread(
                     store,
                     user_id,
@@ -128,14 +135,14 @@ async def chat(websocket: WebSocket):
                     query,
                 )
 
-                # 8. Generate AI response
+                # 9. Generate AI response
                 answer = await asyncio.to_thread(
                     generate_response,
                     query,
                     results,
                 )
 
-                # 9. Save assistant response in SQLite
+                # 10. Save assistant response in SQLite
                 assistant_message = Message(
                     id=str(uuid.uuid4()),
                     conversation_id=conversation_id,
@@ -146,7 +153,7 @@ async def chat(websocket: WebSocket):
                 db.add(assistant_message)
                 db.commit()
 
-                # 10. Store assistant response in Qdrant
+                # 11. Store assistant response in Qdrant
                 await asyncio.to_thread(
                     store,
                     user_id,
@@ -155,7 +162,7 @@ async def chat(websocket: WebSocket):
                     answer,
                 )
 
-                # 11. Send response to frontend
+                # 12. Send response to frontend
                 await websocket.send_json({
                     "query": query,
                     "answer": answer,
@@ -173,10 +180,10 @@ async def chat(websocket: WebSocket):
                 })
 
     except WebSocketDisconnect:
-        logger.info("Chat connection closed.")
+        logger.info("WebSocket connection closed.")
 
     except Exception:
-        logger.exception("WebSocket connection failed")
+        logger.exception("WebSocket connection failed.")
 
     finally:
         db.close()

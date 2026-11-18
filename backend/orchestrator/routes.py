@@ -57,10 +57,12 @@ def signup(data: SignupRequest, db: Session = Depends(get_db)):
     token = create_access_token(user.id)
 
     return {
+        "user_id": user.id,
+        "username": user.username,
+        "email": user.email,
         "message": "Account created successfully.",
         "access_token": token,
         "token_type": "bearer",
-        "username": user.username,
     }
 
 
@@ -85,8 +87,10 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     token = create_access_token(user.id)
 
     return {
+        "user_id": user.id,
+        "username": user.username,
+        "email": user.email,
         "message": "Login successful.",
         "access_token": token,
         "token_type": "bearer",
-        "username": user.username,
     }
