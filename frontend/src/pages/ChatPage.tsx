@@ -28,7 +28,7 @@ export function ChatPage({
 
   const { messages, addMessage, updateMessage } = useChatMessages(selectedId);
 
-  const { status, send } = useChatSocket(identity.token, onLogout);
+  const { status, send } = useChatSocket(onLogout);
 
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -67,7 +67,10 @@ export function ChatPage({
       }));
 
       try {
-        const response = await send({ query });
+        const response = await send({
+          query,
+          conversation_id: conversationId,
+        });
 
         updateMessage(messageId, (message) => ({
           ...message,
@@ -157,6 +160,14 @@ export function ChatPage({
     if (confirmed) onLogout();
   };
 
+  const handleDelete = (id: string) => {
+    const confirmed = window.confirm(
+      "Delete this chat from this browser? Your saved memory on the server is kept.",
+    );
+
+    if (confirmed) deleteConversation(id);
+  };
+
   const handleSelect = (id: string) => {
     selectConversation(id);
     setSidebarOpen(false);
@@ -183,7 +194,7 @@ export function ChatPage({
             setSidebarOpen(false);
           }}
           onSelect={handleSelect}
-          onDelete={deleteConversation}
+          onDelete={handleDelete}
           onLogout={handleLogout}
         />
       </div>

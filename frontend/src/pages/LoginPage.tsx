@@ -1,4 +1,3 @@
-
 import { useState, type FormEvent } from "react";
 import type { Identity } from "../types";
 import { setIdentity } from "../services/identity";
@@ -32,6 +31,7 @@ export function LoginPage({
         `${API_BASE_URL}/api/${isSignup ? "signup" : "login"}`,
         {
           method: "POST",
+          credentials: "include", // lets the server set the session cookie
           headers: {
             "Content-Type": "application/json",
             Accept: "application/json",
@@ -54,10 +54,9 @@ export function LoginPage({
         userId: data.user_id,
         displayName: data.username,
         email: enteredEmail,
-        token: data.access_token,
       };
 
-      if (!identity.userId || !identity.token) {
+      if (!identity.userId) {
         throw new Error("The server returned an invalid authentication response.");
       }
 

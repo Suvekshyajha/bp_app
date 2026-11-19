@@ -8,14 +8,9 @@ export interface SocketHandlers {
   onError: () => void;
 }
 
-export function connectChatSocket(
-  token: string,
-  handlers: SocketHandlers,
-): WebSocket {
-  // URL() keeps the token attached correctly even if the base URL already has a query string.
-  const url = new URL(CHAT_SOCKET_URL);
-  url.searchParams.set("token", token);
-  const socket = new WebSocket(url.toString());
+export function connectChatSocket(handlers: SocketHandlers): WebSocket {
+  // No token here: the browser sends the session cookie by itself.
+  const socket = new WebSocket(CHAT_SOCKET_URL);
 
   socket.addEventListener("open", handlers.onOpen);
   socket.addEventListener("message", (event: MessageEvent<unknown>) =>

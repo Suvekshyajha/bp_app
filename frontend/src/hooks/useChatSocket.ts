@@ -9,16 +9,15 @@ interface PendingRequest {
 }
 
 const REQUEST_TIMEOUT_MS = 70_000;
-const WS_AUTH_FAILED = 4401; // must match backend/orchestrator/websocket.py
+const WS_AUTH_FAILED = 4401; // no valid session: log in again
+const WS_ORIGIN_BLOCKED = 4403; // this website is not allowed by the backend
+// Both must match backend/orchestrator/websocket.py
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error("The chat request failed.");
 }
 
-export function useChatSocket(
-  token: string,
-  onAuthError?: () => void,
-): {
+export function useChatSocket(onAuthError?: () => void): {
   status: ConnectionStatus;
   send: (request: ChatRequest) => Promise<ChatResponse>;
 } {
@@ -67,11 +66,6 @@ export function useChatSocket(
   }, []);
 
   useEffect(() => {
-    if (!token) {
-      setStatus("offline");
-      return;
-    }
-
     let stopped = false;
     let retryTimer: number | undefined;
     let attempt = 0;
@@ -93,7 +87,7 @@ export function useChatSocket(
       let socket: WebSocket;
 
       try {
-        socket = connectChatSocket(token, {
+        socket = connectChatSocket({
           onOpen: () => {
             if (stopped || socketRef.current !== socket) return;
 
@@ -147,11 +141,18 @@ export function useChatSocket(
             socketRef.current = null;
             rejectPending("The chat connection closed before a reply arrived. You can retry.");
 
-            // Token missing/invalid/expired: retrying with the same token can never work.
+            // No valid session (logged out or expired): retrying cannot work.
             if (event.code === WS_AUTH_FAILED) {
               stopped = true;
               setStatus("offline");
               onAuthErrorRef.current?.();
+              return;
+            }
+
+            // The backend does not allow this website (check CORS_ORIGINS).
+            if (event.code === WS_ORIGIN_BLOCKED) {
+              stopped = true;
+              setStatus("offline");
               return;
             }
 
@@ -193,9 +194,23 @@ export function useChatSocket(
       socketRef.current = null;
 
       rejectPending("The chat connection was closed.");
-      socket?.close(1000, "Component unmounted");
+
+      if (socket) {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          // Closing a socket that is still connecting makes the browser log
+          // "WebSocket is closed before the connection is established".
+          // (React StrictMode causes this in dev.) Close it as soon as it opens instead.
+          socket.addEventListener(
+            "open",
+            () => socket.close(1000, "Component unmounted"),
+            { once: true },
+          );
+        } else {
+          socket.close(1000, "Component unmounted");
+        }
+      }
     };
-  }, [token]);
+  }, []);
 
   return { status, send };
 }

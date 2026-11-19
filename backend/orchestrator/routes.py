@@ -1,13 +1,21 @@
-
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import User
-from auth import hash_password, verify_password, create_access_token
+from auth import (
+    SESSION_COOKIE_NAME,
+    clear_session_cookie,
+    create_session,
+    delete_session,
+    get_current_user,
+    hash_password,
+    set_session_cookie,
+    verify_password,
+)
 
 router = APIRouter()
 
@@ -23,13 +31,25 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def user_info(user: User) -> dict:
+    return {
+        "user_id": user.id,
+        "username": user.username,
+        "email": user.email,
+    }
+
+
 @router.get("/health")
 def health_check():
     return {"status": "healthy"}
 
 
 @router.post("/signup")
-def signup(data: SignupRequest, db: Session = Depends(get_db)):
+def signup(
+    data: SignupRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+):
 
     email = str(data.email).lower()
 
@@ -54,20 +74,21 @@ def signup(data: SignupRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    token = create_access_token(user.id)
+    # Log the new user in: start a session and set the cookie
+    set_session_cookie(response, create_session(db, user.id))
 
     return {
-        "user_id": user.id,
-        "username": user.username,
-        "email": user.email,
+        **user_info(user),
         "message": "Account created successfully.",
-        "access_token": token,
-        "token_type": "bearer",
     }
 
 
 @router.post("/login")
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+def login(
+    data: LoginRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+):
 
     email = str(data.email).lower()
 
@@ -84,13 +105,28 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
             detail="Invalid email or password."
         )
 
-    token = create_access_token(user.id)
+    # A new session on every login
+    set_session_cookie(response, create_session(db, user.id))
 
     return {
-        "user_id": user.id,
-        "username": user.username,
-        "email": user.email,
+        **user_info(user),
         "message": "Login successful.",
-        "access_token": token,
-        "token_type": "bearer",
     }
+
+
+@router.post("/logout")
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    # Delete the session on the server, so the cookie stops working everywhere
+    delete_session(db, request.cookies.get(SESSION_COOKIE_NAME))
+    clear_session_cookie(response)
+
+    return {"message": "Logged out."}
+
+
+@router.get("/me")
+def me(user: User = Depends(get_current_user)):
+    return user_info(user)

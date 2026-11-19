@@ -1,4 +1,3 @@
-
 export type MessageRole = "user" | "assistant";
 export type MessageStatus = "pending" | "sent" | "failed";
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
@@ -37,6 +36,7 @@ export interface Conversation {
 
 export interface ChatRequest {
   query: string;
+  conversation_id?: string;
 }
 
 export interface ChatResponse {
@@ -50,5 +50,4 @@ export interface Identity {
   userId: string;
   displayName: string;
   email: string;
-  token: string;
 }

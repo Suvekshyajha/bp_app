@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -10,15 +11,52 @@ from llm import generate_response
 
 from database import SessionLocal
 from models import User, Conversation, Message
-from auth import verify_access_token
+from auth import (
+    ALLOWED_ORIGINS,
+    SESSION_COOKIE_NAME,
+    get_session_user_id,
+)
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Custom close code: the frontend treats it as "log in again"
-WS_AUTH_FAILED = 4401
+# Custom close codes the frontend understands
+WS_AUTH_FAILED = 4401      # no valid session: log in again
+WS_ORIGIN_BLOCKED = 4403   # request came from a website we do not allow
+
+# A conversation id sent by the frontend (a UUID like "3f2a...-...")
+CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+
+
+def get_or_create_conversation(
+    db: Session,
+    user_id: str,
+    conversation_id: str,
+    first_query: str,
+) -> Conversation | None:
+    """Return the user's conversation, creating it on first use.
+
+    Returns None if the id already belongs to another user.
+    """
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id
+    ).first()
+
+    if conversation:
+        return conversation if conversation.user_id == user_id else None
+
+    conversation = Conversation(
+        id=conversation_id,
+        user_id=user_id,
+        title=" ".join(first_query.split())[:40],
+    )
+
+    db.add(conversation)
+    db.commit()
+
+    return conversation
 
 
 @router.websocket("/ws/chat")
@@ -28,27 +66,31 @@ async def chat(websocket: WebSocket):
     #    (Closing before accept() makes the browser see a bare HTTP 403.)
     await websocket.accept()
 
-    # 2. Get and verify login token
-    token = websocket.query_params.get("token")
+    # 2. Check which website opened this connection.
+    #    The session cookie is sent automatically by the browser, so without
+    #    this check a hostile website could use the visitor's login.
+    origin = websocket.headers.get("origin")
 
-    if not token:
-        logger.warning("WebSocket rejected: token is missing.")
-        await websocket.close(code=WS_AUTH_FAILED, reason="Token missing")
+    if origin and origin.rstrip("/") not in ALLOWED_ORIGINS:
+        logger.warning("WebSocket rejected: origin not allowed: %s", origin)
+        await websocket.close(code=WS_ORIGIN_BLOCKED, reason="Origin not allowed")
         return
 
-    try:
-        user_id = verify_access_token(token)
-        logger.info("WebSocket JWT verified for user: %s", user_id)
+    # 3. Check the session cookie
+    session_token = websocket.cookies.get(SESSION_COOKIE_NAME)
 
-    except Exception:
-        logger.warning("WebSocket rejected: invalid or expired token.")
-        await websocket.close(code=WS_AUTH_FAILED, reason="Invalid or expired token")
-        return
-
-    # 3. Check whether user exists
     db: Session = SessionLocal()
 
     try:
+        user_id = get_session_user_id(db, session_token)
+
+        if not user_id:
+            logger.warning("WebSocket rejected: no valid session.")
+            await websocket.close(code=WS_AUTH_FAILED, reason="Not logged in")
+            return
+
+        logger.info("WebSocket session verified for user: %s", user_id)
+
         user = db.query(User).filter(
             User.id == user_id
         ).first()
@@ -58,26 +100,11 @@ async def chat(websocket: WebSocket):
             await websocket.close(code=WS_AUTH_FAILED, reason="User not found")
             return
 
-        # 4. Get or create the user's conversation
-        conversation_id = str(uuid.uuid5(
+        # 4. Default conversation id (used only if the frontend sends none)
+        default_conversation_id = str(uuid.uuid5(
             uuid.NAMESPACE_DNS,
             f"day2-chat-{user_id}"
         ))
-
-        conversation = db.query(Conversation).filter(
-            Conversation.id == conversation_id,
-            Conversation.user_id == user_id,
-        ).first()
-
-        if not conversation:
-            conversation = Conversation(
-                id=conversation_id,
-                user_id=user_id,
-                title="My Chat",
-            )
-
-            db.add(conversation)
-            db.commit()
 
         logger.info("WebSocket connected for user: %s", user_id)
 
@@ -99,6 +126,14 @@ async def chat(websocket: WebSocket):
                 })
                 continue
 
+            # Logging out (or an expired session) ends the chat immediately
+            if get_session_user_id(db, session_token) != user_id:
+                await websocket.close(
+                    code=WS_AUTH_FAILED,
+                    reason="Session ended",
+                )
+                return
+
             query = data.get("query")
 
             if not isinstance(query, str) or not query.strip():
@@ -109,7 +144,36 @@ async def chat(websocket: WebSocket):
 
             query = query.strip()
 
+            # Which conversation is this message for? (one per "New chat")
+            requested_id = data.get("conversation_id")
+
+            if requested_id is None:
+                conversation_id = default_conversation_id
+            elif (
+                isinstance(requested_id, str)
+                and CONVERSATION_ID_PATTERN.match(requested_id)
+            ):
+                conversation_id = requested_id
+            else:
+                await websocket.send_json({
+                    "error": "Invalid conversation id."
+                })
+                continue
+
             try:
+                conversation = get_or_create_conversation(
+                    db,
+                    user_id,
+                    conversation_id,
+                    query,
+                )
+
+                if conversation is None:
+                    await websocket.send_json({
+                        "error": "Conversation not found."
+                    })
+                    continue
+
                 # 6. Retrieve relevant past messages from Qdrant
                 results = await asyncio.to_thread(
                     retrieve,

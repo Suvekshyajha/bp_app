@@ -1,7 +1,8 @@
-
 import type { Identity } from "../types";
 import { safeGetJson, safeRemove, safeSetJson } from "./storage";
 
+// Only display info is stored here. The login itself is an HttpOnly cookie
+// that JavaScript cannot read.
 const IDENTITY_KEY = "day2.identity";
 
 function isIdentity(value: unknown): value is Identity {
@@ -15,9 +16,7 @@ function isIdentity(value: unknown): value is Identity {
     typeof candidate.displayName === "string" &&
     candidate.displayName.trim().length > 0 &&
     typeof candidate.email === "string" &&
-    candidate.email.trim().length > 0 &&
-    typeof candidate.token === "string" &&
-    candidate.token.trim().length > 0
+    candidate.email.trim().length > 0
   );
 }
 
@@ -36,10 +35,6 @@ export function getDisplayName(): string | null {
 
 export function getEmail(): string | null {
   return getIdentity()?.email ?? null;
-}
-
-export function getToken(): string | null {
-  return getIdentity()?.token ?? null;
 }
 
 export function setIdentity(identity: Identity): boolean {
