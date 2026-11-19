@@ -26,7 +26,8 @@ export function ChatPage({
     deleteConversation,
   } = useConversations();
 
-  const { messages, addMessage, updateMessage } = useChatMessages(selectedId);
+  const { messages, addMessage, updateMessage, removeMessage } =
+    useChatMessages(selectedId);
 
   const { status, send } = useChatSocket(onLogout);
 
@@ -66,11 +67,33 @@ export function ChatPage({
         error: undefined,
       }));
 
+      // The assistant bubble is created when the first token arrives
+      const assistantId = crypto.randomUUID();
+      let started = false;
+
+      const handleToken = (token: string) => {
+        if (!started) {
+          started = true;
+
+          addMessage({
+            id: assistantId,
+            role: "assistant",
+            content: token,
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          updateMessage(assistantId, (message) => ({
+            ...message,
+            content: message.content + token,
+          }));
+        }
+      };
+
       try {
-        const response = await send({
-          query,
-          conversation_id: conversationId,
-        });
+        const response = await send(
+          { query, conversation_id: conversationId },
+          handleToken,
+        );
 
         updateMessage(messageId, (message) => ({
           ...message,
@@ -78,14 +101,26 @@ export function ChatPage({
           error: undefined,
         }));
 
-        addMessage({
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: response.answer,
-          createdAt: new Date().toISOString(),
-          context: response.results,
-        });
+        if (started) {
+          // Finish the bubble we were streaming into
+          updateMessage(assistantId, (message) => ({
+            ...message,
+            content: response.answer,
+            context: response.results,
+          }));
+        } else {
+          addMessage({
+            id: assistantId,
+            role: "assistant",
+            content: response.answer,
+            createdAt: new Date().toISOString(),
+            context: response.results,
+          });
+        }
       } catch (error) {
+        // Drop a half-written answer so a retry does not leave a duplicate
+        if (started) removeMessage(assistantId);
+
         const message =
           error instanceof Error
             ? error.message
@@ -101,7 +136,7 @@ export function ChatPage({
         setIsSending(false);
       }
     },
-    [addMessage, send, updateMessage],
+    [addMessage, removeMessage, send, updateMessage],
   );
 
   const handleSend = useCallback(

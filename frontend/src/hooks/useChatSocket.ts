@@ -5,6 +5,7 @@ import type { ChatRequest, ChatResponse, ConnectionStatus } from "../types";
 interface PendingRequest {
   resolve: (response: ChatResponse) => void;
   reject: (error: Error) => void;
+  onToken?: (token: string) => void;
   timeoutId: number;
 }
 
@@ -19,7 +20,10 @@ function asError(error: unknown): Error {
 
 export function useChatSocket(onAuthError?: () => void): {
   status: ConnectionStatus;
-  send: (request: ChatRequest) => Promise<ChatResponse>;
+  send: (
+    request: ChatRequest,
+    onToken?: (token: string) => void,
+  ) => Promise<ChatResponse>;
 } {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const socketRef = useRef<WebSocket | null>(null);
@@ -30,7 +34,21 @@ export function useChatSocket(onAuthError?: () => void): {
     onAuthErrorRef.current = onAuthError;
   }, [onAuthError]);
 
-  const send = useCallback((request: ChatRequest) => {
+  // (Re)start the timer. It runs again on every token, so it only fires
+  // if the server goes quiet for REQUEST_TIMEOUT_MS.
+  const armTimeout = useCallback((pending: PendingRequest) => {
+    window.clearTimeout(pending.timeoutId);
+
+    pending.timeoutId = window.setTimeout(() => {
+      if (pendingRef.current !== pending) return;
+
+      pendingRef.current = null;
+      pending.reject(new Error("The assistant took too long to reply. You can retry."));
+      socketRef.current?.close(4000, "Request timed out");
+    }, REQUEST_TIMEOUT_MS);
+  }, []);
+
+  const send = useCallback((request: ChatRequest, onToken?: (token: string) => void) => {
     return new Promise<ChatResponse>((resolve, reject) => {
       const socket = socketRef.current;
 
@@ -44,26 +62,20 @@ export function useChatSocket(onAuthError?: () => void): {
         return;
       }
 
-      const timeoutId = window.setTimeout(() => {
-        const pending = pendingRef.current;
-        if (!pending) return;
+      const pending: PendingRequest = { resolve, reject, onToken, timeoutId: 0 };
 
-        pendingRef.current = null;
-        pending.reject(new Error("The assistant took too long to reply. You can retry."));
-        socketRef.current?.close(4000, "Request timed out");
-      }, REQUEST_TIMEOUT_MS);
-
-      pendingRef.current = { resolve, reject, timeoutId };
+      pendingRef.current = pending;
+      armTimeout(pending);
 
       try {
         sendChatRequest(socket, request);
       } catch (error) {
-        window.clearTimeout(timeoutId);
+        window.clearTimeout(pending.timeoutId);
         pendingRef.current = null;
         reject(asError(error));
       }
     });
-  }, []);
+  }, [armTimeout]);
 
   useEffect(() => {
     let stopped = false;
@@ -101,9 +113,6 @@ export function useChatSocket(onAuthError?: () => void): {
             const pending = pendingRef.current;
             if (!pending) return;
 
-            window.clearTimeout(pending.timeoutId);
-            pendingRef.current = null;
-
             try {
               const parsed: unknown = JSON.parse(String(raw));
 
@@ -117,9 +126,20 @@ export function useChatSocket(onAuthError?: () => void): {
                 throw new Error(value.error);
               }
 
+              // One piece of the answer: show it and keep waiting for more
+              if (value.type === "token" && typeof value.content === "string") {
+                pending.onToken?.(value.content);
+                armTimeout(pending);
+                return;
+              }
+
+              // Anything else is the final "done" message
               if (typeof value.answer !== "string") {
                 throw new Error("The server reply did not include an answer.");
               }
+
+              window.clearTimeout(pending.timeoutId);
+              pendingRef.current = null;
 
               pending.resolve({
                 query: typeof value.query === "string" ? value.query : undefined,
@@ -131,6 +151,8 @@ export function useChatSocket(onAuthError?: () => void): {
                 results: Array.isArray(value.results) ? value.results : [],
               });
             } catch (error) {
+              window.clearTimeout(pending.timeoutId);
+              pendingRef.current = null;
               pending.reject(asError(error));
             }
           },
@@ -210,7 +232,7 @@ export function useChatSocket(onAuthError?: () => void): {
         }
       }
     };
-  }, []);
+  }, [armTimeout]);
 
   return { status, send };
 }

@@ -7,13 +7,14 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from retriever_client import retrieve, store
-from llm import generate_response
+from llm import stream_response
 
 from database import SessionLocal, engine
 from models import User, Conversation, Message
 from auth import (
     ALLOWED_ORIGINS,
     SESSION_COOKIE_NAME,
+    extend_session,
     get_session_user_id,
 )
 
@@ -142,8 +143,9 @@ async def chat(websocket: WebSocket):
                 )
                 return
 
-            # Same idea: the session check above opened a transaction, close it
-            db.rollback()
+            # The user is active: restart their 12 minutes. This commits, so it
+            # also closes the transaction the session check above opened.
+            extend_session(db, session_token)
 
             query = data.get("query")
 
@@ -217,12 +219,18 @@ async def chat(websocket: WebSocket):
                     query,
                 )
 
-                # 9. Generate AI response
-                answer = await asyncio.to_thread(
-                    generate_response,
-                    query,
-                    results,
-                )
+                # 9. Generate the AI response, sending it token by token
+                parts: list[str] = []
+
+                async for token in stream_response(query, results):
+                    parts.append(token)
+
+                    await websocket.send_json({
+                        "type": "token",
+                        "content": token,
+                    })
+
+                answer = "".join(parts)
 
                 # 10. Save assistant response in SQLite
                 assistant_message = Message(
@@ -244,8 +252,9 @@ async def chat(websocket: WebSocket):
                     answer,
                 )
 
-                # 12. Send response to frontend
+                # 12. Tell the frontend the answer is complete
                 await websocket.send_json({
+                    "type": "done",
                     "query": query,
                     "answer": answer,
                     "conversation_id": conversation_id,

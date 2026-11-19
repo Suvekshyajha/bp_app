@@ -33,6 +33,10 @@ if COOKIE_SAMESITE not in ("lax", "strict", "none"):
 if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
     raise ValueError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
 
+# The cookie outlives the login on purpose: the real 12-minute limit lives in
+# the database (UserSession.expires_at) and moves forward while the user chats.
+COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
 # Frontend addresses allowed to call the API (used for CORS and Origin checks)
 ALLOWED_ORIGINS = [
     origin.strip().rstrip("/")
@@ -82,7 +86,7 @@ def create_session(db: Session, user_id: str) -> str:
     db.add(UserSession(
         id=_hash_token(token),
         user_id=user_id,
-        expires_at=_now() + timedelta(days=SESSION_DAYS),
+        expires_at=_now() + timedelta(minutes=SESSION_MINUTES),
     ))
     db.commit()
 
@@ -110,6 +114,24 @@ def get_session_user_id(db: Session, token: str | None) -> str | None:
     return session.user_id
 
 
+def extend_session(db: Session, token: str | None) -> None:
+    """Restart the clock: the session now lasts SESSION_MINUTES from this moment.
+
+    Called on every chat message, so an active user stays logged in and
+    only someone who is idle for SESSION_MINUTES gets logged out.
+    """
+
+    if not token:
+        return
+
+    db.query(UserSession).filter(
+        UserSession.id == _hash_token(token)
+    ).update({
+        "expires_at": _now() + timedelta(minutes=SESSION_MINUTES),
+    })
+    db.commit()
+
+
 def delete_session(db: Session, token: str | None) -> None:
     if not token:
         return
@@ -126,7 +148,7 @@ def set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
-        max_age=SESSION_DAYS * 24 * 60 * 60,
+        max_age=COOKIE_MAX_AGE_SECONDS,  # the server decides when a login ends
         httponly=True,  # JavaScript cannot read it
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,

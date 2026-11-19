@@ -42,5 +42,13 @@ export function useChatMessages(_conversationId: string) {
     [],
   );
 
-  return { messages, addMessage, updateMessage };
+    const removeMessage = useCallback((id: string) => {
+    setStoredMessages((current) =>
+      current.filter((message) => message.id !== id),
+    );
+  }, []);
+
+  return { messages, addMessage, updateMessage, removeMessage };
+
+  
 }

@@ -1,7 +1,7 @@
 import os
 
 from dotenv import load_dotenv
-from groq import Groq
+from groq import AsyncGroq, Groq
 
 
 load_dotenv()
@@ -13,7 +13,7 @@ if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY is not configured")
 
 client = Groq(api_key=GROQ_API_KEY, timeout=30.0)
-
+async_client = AsyncGroq(api_key=GROQ_API_KEY, timeout=30.0)
 
 SYSTEM_PROMPT = (
     "You are a helpful conversational assistant. "
@@ -43,10 +43,10 @@ def build_context_block(context: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-def generate_response(
+def build_messages(
     query: str,
     context: list[dict],
-) -> str:
+) -> list[dict]:
 
     user_content = query
 
@@ -58,15 +58,44 @@ def generate_response(
             f"{query}"
         )
 
-    messages = [
+    return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
+
+def generate_response(
+    query: str,
+    context: list[dict],
+) -> str:
+
     response = client.chat.completions.create(
         model=GROQ_MODEL,
-        messages=messages,
+        messages=build_messages(query, context),
         temperature=0.3,
     )
 
     return response.choices[0].message.content or ""
+
+
+async def stream_response(
+    query: str,
+    context: list[dict],
+):
+    """Yield the answer piece by piece as the model writes it."""
+
+    stream = await async_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=build_messages(query, context),
+        temperature=0.3,
+        stream=True,
+    )
+
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+
+        token = chunk.choices[0].delta.content
+
+        if token:
+            yield token

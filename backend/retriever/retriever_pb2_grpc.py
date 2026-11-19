@@ -34,10 +34,10 @@ class RetrieverServiceStub:
         Args:
             channel: A grpc.Channel.
         """
-        self.RetrieveData = channel.unary_unary(
+        self.RetrieveData = channel.unary_stream(
                 '/retriever.RetrieverService/RetrieveData',
                 request_serializer=retriever__pb2.RetrieveRequest.SerializeToString,
-                response_deserializer=retriever__pb2.RetrieveResponse.FromString,
+                response_deserializer=retriever__pb2.RetrievedChunk.FromString,
                 _registered_method=True)
         self.StoreMessage = channel.unary_unary(
                 '/retriever.RetrieverService/StoreMessage',
@@ -64,10 +64,10 @@ class RetrieverServiceServicer:
 
 def add_RetrieverServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'RetrieveData': grpc.unary_unary_rpc_method_handler(
+            'RetrieveData': grpc.unary_stream_rpc_method_handler(
                     servicer.RetrieveData,
                     request_deserializer=retriever__pb2.RetrieveRequest.FromString,
-                    response_serializer=retriever__pb2.RetrieveResponse.SerializeToString,
+                    response_serializer=retriever__pb2.RetrievedChunk.SerializeToString,
             ),
             'StoreMessage': grpc.unary_unary_rpc_method_handler(
                     servicer.StoreMessage,
@@ -96,12 +96,12 @@ class RetrieverService:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(
+        return grpc.experimental.unary_stream(
             request,
             target,
             '/retriever.RetrieverService/RetrieveData',
             retriever__pb2.RetrieveRequest.SerializeToString,
-            retriever__pb2.RetrieveResponse.FromString,
+            retriever__pb2.RetrievedChunk.FromString,
             options,
             channel_credentials,
             insecure,

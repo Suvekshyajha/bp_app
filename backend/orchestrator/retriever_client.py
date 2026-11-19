@@ -32,15 +32,18 @@ def retrieve(
             limit=limit,
         )
 
-        response = stub.RetrieveData(request, timeout=30)
+        # The server now streams the chunks back one by one
+        stream = stub.RetrieveData(request, timeout=30)
 
+        # Read the whole stream here, inside the `with`. If we returned the
+        # stream itself, the channel would close before we read from it.
         return [
             {
-                "id": message.id,
-                "score": message.score,
-                "payload": MessageToDict(message.payload),
+                "id": chunk.id,
+                "score": chunk.score,
+                "payload": MessageToDict(chunk.payload),
             }
-            for message in response.results
+            for chunk in stream
         ]
 
 

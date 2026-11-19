@@ -25,9 +25,16 @@ export function MessageList({
   const shouldStickRef = useRef(true);
   const [hasScrolledUp, setHasScrolledUp] = useState(false);
 
+  // Also follow the text while the last message grows during streaming
+  const lastMessage = messages[messages.length - 1];
+  const lastContent = lastMessage?.content;
+
+  // Show "Thinking" only until the first token arrives
+  const showTyping = isSending && lastMessage?.role !== "assistant";
+
   useEffect(() => {
-    if (shouldStickRef.current) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, isSending]);
+    if (shouldStickRef.current) endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [messages.length, lastContent, isSending]);
 
   const handleScroll = () => {
     const element = scrollRef.current;
@@ -55,7 +62,7 @@ export function MessageList({
         ) : (
           messages.map((message) => <MessageBubble key={message.id} message={message} onRetry={onRetry} />)
         )}
-        {isSending && <TypingIndicator />}
+        {showTyping && <TypingIndicator />}
         <div ref={endRef} />
       </div>
       {hasScrolledUp && messages.length > 2 && (

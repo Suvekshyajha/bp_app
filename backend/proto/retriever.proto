@@ -1,4 +1,3 @@
-
 syntax = "proto3";
 
 package retriever;
@@ -6,7 +5,7 @@ package retriever;
 import "google/protobuf/struct.proto";
 
 service RetrieverService {
-    rpc RetrieveData (RetrieveRequest) returns (RetrieveResponse);
+    rpc RetrieveData (RetrieveRequest) returns (stream RetrievedChunk);
     rpc StoreMessage (StoreMessageRequest) returns (StoreMessageResponse);
 }
 
@@ -22,11 +21,6 @@ message RetrievedChunk {
     float score = 2;
     google.protobuf.Struct payload = 3;
 }
-
-message RetrieveResponse {
-    repeated RetrievedChunk results = 1;
-}
-
 
 message StoreMessageRequest {
     string user_id = 1;

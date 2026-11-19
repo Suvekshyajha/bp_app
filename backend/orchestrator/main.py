@@ -1,63 +1,104 @@
-from contextlib import asynccontextmanager
+from concurrent import futures
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+import grpc
+from google.protobuf.json_format import ParseDict
 
-from routes import router as rest_router
-from websocket import router as websocket_router
+import retriever_pb2
+import retriever_pb2_grpc
 
-from database import engine, Base
-import models
-from auth import ALLOWED_ORIGINS
-
-load_dotenv()
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    yield
+from retrieval import retrieve_messages
+from qdrant_store import create_collection, store_message
 
 
-app = FastAPI(
-    title="Day2 BP Chat API",
-    description="Chat API with hybrid retrieval",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+class RetrieverService(retriever_pb2_grpc.RetrieverServiceServicer):
 
-# allow_credentials lets the browser send the session cookie.
-# The origins must be listed explicitly (no "*").
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.middleware("http")
-async def block_foreign_origins(request: Request, call_next):
-    """Cookies are sent automatically, so refuse changes from other websites."""
-    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-        origin = request.headers.get("origin")
-
-        if origin and origin.rstrip("/") not in ALLOWED_ORIGINS:
-            return JSONResponse(
-                {"detail": "Origin not allowed."},
-                status_code=403,
+    def RetrieveData(self, request, context):
+        # Server streaming: this is a generator. Each `yield` sends one
+        # chunk to the caller right away instead of one big response.
+        if not request.user_id or not request.query.strip():
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "user_id and query are required",
             )
 
-    return await call_next(request)
+        try:
+            results = retrieve_messages(
+                query=request.query,
+                user_id=request.user_id,
+                limit=request.limit or 5,
+            )
 
-app.include_router(rest_router, prefix="/api")
-app.include_router(websocket_router)
+            # Best match first
+            for result in results:
+                chunk = retriever_pb2.RetrievedChunk(
+                    id=result["id"],
+                    score=result["score"],
+                )
+
+                if result["payload"]:
+                    ParseDict(
+                        result["payload"],
+                        chunk.payload,
+                    )
+
+                yield chunk
+
+        except Exception as error:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(error))
+            return
+
+    def StoreMessage(self, request, context):
+        if (
+            not request.user_id
+            or not request.conversation_id
+            or not request.content.strip()
+        ):
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "user_id, conversation_id and content are required",
+            )
+
+        try:
+            message_id = store_message(
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                role=request.role,
+                content=request.content,
+            )
+
+            return retriever_pb2.StoreMessageResponse(
+                message_id=message_id
+            )
+
+        except Exception as error:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(error))
+            return retriever_pb2.StoreMessageResponse()
 
 
-@app.get("/")
-def root():
-    return {
-        "message": "Day2 BP Chat API is running"
-    }
+def serve():
+    # Create Qdrant collection if it doesn't exist
+    create_collection()
+
+    # Initialize gRPC server
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10)
+    )
+
+    retriever_pb2_grpc.add_RetrieverServiceServicer_to_server(
+        RetrieverService(),
+        server,
+    )
+
+    server.add_insecure_port("[::]:50051")
+
+    server.start()
+
+    print("Retriever gRPC server running on port 50051")
+
+    server.wait_for_termination()
+
+
+if __name__ == "__main__":
+    serve()

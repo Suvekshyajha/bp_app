@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0fretriever.proto\x12\tretriever\x1a\x1cgoogle/protobuf/struct.proto\"@\n\x0fRetrieveRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\r\n\x05limit\x18\x03 \x01(\x05\"U\n\x0eRetrievedChunk\x12\n\n\x02id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12(\n\x07payload\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\">\n\x10RetrieveResponse\x12*\n\x07results\x18\x01 \x03(\x0b\x32\x19.retriever.RetrievedChunk\"^\n\x13StoreMessageRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x17\n\x0f\x63onversation_id\x18\x02 \x01(\t\x12\x0c\n\x04role\x18\x03 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x04 \x01(\t\"*\n\x14StoreMessageResponse\x12\x12\n\nmessage_id\x18\x01 \x01(\t2\xac\x01\n\x10RetrieverService\x12G\n\x0cRetrieveData\x12\x1a.retriever.RetrieveRequest\x1a\x1b.retriever.RetrieveResponse\x12O\n\x0cStoreMessage\x12\x1e.retriever.StoreMessageRequest\x1a\x1f.retriever.StoreMessageResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0fretriever.proto\x12\tretriever\x1a\x1cgoogle/protobuf/struct.proto\"@\n\x0fRetrieveRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\r\n\x05limit\x18\x03 \x01(\x05\"U\n\x0eRetrievedChunk\x12\n\n\x02id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12(\n\x07payload\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\"^\n\x13StoreMessageRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x17\n\x0f\x63onversation_id\x18\x02 \x01(\t\x12\x0c\n\x04role\x18\x03 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x04 \x01(\t\"*\n\x14StoreMessageResponse\x12\x12\n\nmessage_id\x18\x01 \x01(\t2\xac\x01\n\x10RetrieverService\x12G\n\x0cRetrieveData\x12\x1a.retriever.RetrieveRequest\x1a\x19.retriever.RetrievedChunk0\x01\x12O\n\x0cStoreMessage\x12\x1e.retriever.StoreMessageRequest\x1a\x1f.retriever.StoreMessageResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,12 +36,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_RETRIEVEREQUEST']._serialized_end=124
   _globals['_RETRIEVEDCHUNK']._serialized_start=126
   _globals['_RETRIEVEDCHUNK']._serialized_end=211
-  _globals['_RETRIEVERESPONSE']._serialized_start=213
-  _globals['_RETRIEVERESPONSE']._serialized_end=275
-  _globals['_STOREMESSAGEREQUEST']._serialized_start=277
-  _globals['_STOREMESSAGEREQUEST']._serialized_end=371
-  _globals['_STOREMESSAGERESPONSE']._serialized_start=373
-  _globals['_STOREMESSAGERESPONSE']._serialized_end=415
-  _globals['_RETRIEVERSERVICE']._serialized_start=418
-  _globals['_RETRIEVERSERVICE']._serialized_end=590
+  _globals['_STOREMESSAGEREQUEST']._serialized_start=213
+  _globals['_STOREMESSAGEREQUEST']._serialized_end=307
+  _globals['_STOREMESSAGERESPONSE']._serialized_start=309
+  _globals['_STOREMESSAGERESPONSE']._serialized_end=351
+  _globals['_RETRIEVERSERVICE']._serialized_start=354
+  _globals['_RETRIEVERSERVICE']._serialized_end=526
 # @@protoc_insertion_point(module_scope)
