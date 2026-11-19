@@ -49,7 +49,7 @@ export function MessageList({
       <div className="message-list" aria-live="polite" aria-relevant="additions text">
         {messages.length === 0 ? (
           <section className="empty-state" aria-labelledby="welcome-title">
-            <div className="empty-mark" aria-hidden="true">D</div>
+            <div className="empty-mark" aria-hidden="true">I</div>
             <p className="eyebrow">INFOMATE</p>
             <h1 id="welcome-title">A clearer place to think.</h1>
             <p className="empty-copy">Ask a question. When it helps, related messages from your past conversations can add context.</p>

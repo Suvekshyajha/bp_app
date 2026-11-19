@@ -4,16 +4,18 @@ export function ChatInput({
   value,
   onChange,
   onSend,
-  disabled,
+  onStop,
+  sending,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
-  disabled: boolean;
+  onStop?: () => void;
+  sending: boolean;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const submit = () => {
-    if (disabled || !value.trim()) return;
+    if (sending || !value.trim()) return;
     onSend();
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -32,17 +34,22 @@ export function ChatInput({
             submit();
           }
         }}
-        placeholder="Write a message…"
+        placeholder={sending ? "Type your next message while the answer is written…" : "Write a message…"}
         maxLength={4000}
         rows={1}
-        disabled={disabled}
         aria-describedby="chat-input-hint"
       />
       <div className="composer-footer">
         <span id="chat-input-hint">Enter to send · Shift+Enter for a new line · 4,000 character limit</span>
-        <button className="send-button" type="submit" disabled={disabled || !value.trim()} aria-label="Send message">
-          <span>Send</span><span aria-hidden="true">↑</span>
-        </button>
+        {sending && onStop ? (
+          <button className="send-button" type="button" onClick={onStop} aria-label="Stop generating">
+            <span>Stop</span><span aria-hidden="true">■</span>
+          </button>
+        ) : (
+          <button className="send-button" type="submit" disabled={sending || !value.trim()} aria-label="Send message">
+            <span>Send</span><span aria-hidden="true">↑</span>
+          </button>
+        )}
       </div>
     </form>
   );

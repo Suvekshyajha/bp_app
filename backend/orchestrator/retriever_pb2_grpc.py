@@ -26,7 +26,10 @@ if _version_not_supported:
 
 
 class RetrieverServiceStub:
-    """Missing associated documentation comment in .proto file."""
+    """Both RPCs are bidirectional streams. One stream can stay open and carry
+    many requests; every response carries the request_id of the request it
+    answers, so replies can arrive in any order.
+    """
 
     def __init__(self, channel):
         """Constructor.
@@ -34,12 +37,12 @@ class RetrieverServiceStub:
         Args:
             channel: A grpc.Channel.
         """
-        self.RetrieveData = channel.unary_stream(
+        self.RetrieveData = channel.stream_stream(
                 '/retriever.RetrieverService/RetrieveData',
                 request_serializer=retriever__pb2.RetrieveRequest.SerializeToString,
                 response_deserializer=retriever__pb2.RetrievedChunk.FromString,
                 _registered_method=True)
-        self.StoreMessage = channel.unary_unary(
+        self.StoreMessage = channel.stream_stream(
                 '/retriever.RetrieverService/StoreMessage',
                 request_serializer=retriever__pb2.StoreMessageRequest.SerializeToString,
                 response_deserializer=retriever__pb2.StoreMessageResponse.FromString,
@@ -47,15 +50,18 @@ class RetrieverServiceStub:
 
 
 class RetrieverServiceServicer:
-    """Missing associated documentation comment in .proto file."""
+    """Both RPCs are bidirectional streams. One stream can stay open and carry
+    many requests; every response carries the request_id of the request it
+    answers, so replies can arrive in any order.
+    """
 
-    def RetrieveData(self, request, context):
+    def RetrieveData(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def StoreMessage(self, request, context):
+    def StoreMessage(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -64,12 +70,12 @@ class RetrieverServiceServicer:
 
 def add_RetrieverServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'RetrieveData': grpc.unary_stream_rpc_method_handler(
+            'RetrieveData': grpc.stream_stream_rpc_method_handler(
                     servicer.RetrieveData,
                     request_deserializer=retriever__pb2.RetrieveRequest.FromString,
                     response_serializer=retriever__pb2.RetrievedChunk.SerializeToString,
             ),
-            'StoreMessage': grpc.unary_unary_rpc_method_handler(
+            'StoreMessage': grpc.stream_stream_rpc_method_handler(
                     servicer.StoreMessage,
                     request_deserializer=retriever__pb2.StoreMessageRequest.FromString,
                     response_serializer=retriever__pb2.StoreMessageResponse.SerializeToString,
@@ -83,10 +89,13 @@ def add_RetrieverServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class RetrieverService:
-    """Missing associated documentation comment in .proto file."""
+    """Both RPCs are bidirectional streams. One stream can stay open and carry
+    many requests; every response carries the request_id of the request it
+    answers, so replies can arrive in any order.
+    """
 
     @staticmethod
-    def RetrieveData(request,
+    def RetrieveData(request_iterator,
             target,
             options=(),
             channel_credentials=None,
@@ -96,8 +105,8 @@ class RetrieverService:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
+        return grpc.experimental.stream_stream(
+            request_iterator,
             target,
             '/retriever.RetrieverService/RetrieveData',
             retriever__pb2.RetrieveRequest.SerializeToString,
@@ -113,7 +122,7 @@ class RetrieverService:
             _registered_method=True)
 
     @staticmethod
-    def StoreMessage(request,
+    def StoreMessage(request_iterator,
             target,
             options=(),
             channel_credentials=None,
@@ -123,8 +132,8 @@ class RetrieverService:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
+        return grpc.experimental.stream_stream(
+            request_iterator,
             target,
             '/retriever.RetrieverService/StoreMessage',
             retriever__pb2.StoreMessageRequest.SerializeToString,

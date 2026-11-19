@@ -60,6 +60,10 @@ def get_or_create_conversation(
     return conversation
 
 
+# Most answers one browser connection may have in progress at once
+MAX_ACTIVE_TURNS = 3
+
+
 class ChatTurn:
     """One question being answered. Lets the receive loop cancel it."""
 
@@ -102,7 +106,7 @@ async def answer_question(
             db.rollback()
 
             if conversation is None:
-                await send({"error": "Conversation not found."})
+                await send({"error": "Conversation not found.", "conversation_id": conversation_id})
                 return
 
             # 6. Retrieve relevant past messages. They stream back over the
@@ -133,7 +137,11 @@ async def answer_question(
             try:
                 async for token in tokens:
                     parts.append(token)
-                    await send({"type": "token", "content": token})
+                    await send({
+                        "type": "token",
+                        "content": token,
+                        "conversation_id": conversation_id,
+                    })
 
             except asyncio.CancelledError:
                 # The user pressed stop (or left). Keep what was written.
@@ -189,7 +197,10 @@ async def answer_question(
             logger.exception("Chat request failed")
 
             try:
-                await send({"error": "Something went wrong. Please try again."})
+                await send({
+                    "error": "Something went wrong. Please try again.",
+                    "conversation_id": conversation_id,
+                })
             except Exception:
                 pass  # the connection is gone
 
@@ -226,7 +237,8 @@ async def chat(websocket: WebSocket):
         async with send_lock:
             await websocket.send_json(payload)
 
-    turn = ChatTurn()
+    # One answer in progress per conversation, keyed by conversation id
+    turns: dict[str, ChatTurn] = {}
 
     try:
         user_id = get_session_user_id(db, session_token)
@@ -275,10 +287,27 @@ async def chat(websocket: WebSocket):
                 await send({"error": "Message must be a JSON object."})
                 continue
 
-            # Stop button: ends the answer being streamed, keeps what was written
+            requested_id = data.get("conversation_id")
+
+            # Which conversation is this message for? (one per "New chat")
+            if requested_id is None:
+                conversation_id = default_conversation_id
+            elif (
+                isinstance(requested_id, str)
+                and CONVERSATION_ID_PATTERN.match(requested_id)
+            ):
+                conversation_id = requested_id
+            else:
+                await send({"error": "Invalid conversation id."})
+                continue
+
+            # Stop button: ends the answer being streamed for that conversation
+            # and keeps what was written
             if data.get("type") == "cancel":
-                if turn.running and turn.streaming:
-                    turn.task.cancel()
+                target = turns.get(conversation_id)
+
+                if target and target.running and target.streaming:
+                    target.task.cancel()
                 continue
 
             # Logging out (or an expired session) ends the chat immediately
@@ -296,30 +325,36 @@ async def chat(websocket: WebSocket):
             query = data.get("query")
 
             if not isinstance(query, str) or not query.strip():
-                await send({"error": "A valid query is required."})
-                continue
-
-            if turn.running:
-                await send({"error": "A reply is already in progress."})
+                await send({
+                    "error": "A valid query is required.",
+                    "conversation_id": conversation_id,
+                })
                 continue
 
             query = query.strip()
 
-            # Which conversation is this message for? (one per "New chat")
-            requested_id = data.get("conversation_id")
+            # Forget answers that have finished
+            for key in [k for k, t in turns.items() if not t.running]:
+                del turns[key]
 
-            if requested_id is None:
-                conversation_id = default_conversation_id
-            elif (
-                isinstance(requested_id, str)
-                and CONVERSATION_ID_PATTERN.match(requested_id)
-            ):
-                conversation_id = requested_id
-            else:
-                await send({"error": "Invalid conversation id."})
+            # One answer at a time per conversation...
+            if conversation_id in turns:
+                await send({
+                    "error": "A reply is already in progress in this chat.",
+                    "conversation_id": conversation_id,
+                })
+                continue
+
+            # ...but different conversations can answer at the same time
+            if len(turns) >= MAX_ACTIVE_TURNS:
+                await send({
+                    "error": "Too many chats are answering at once. Wait for one to finish.",
+                    "conversation_id": conversation_id,
+                })
                 continue
 
             turn = ChatTurn()
+            turns[conversation_id] = turn
             turn.task = asyncio.create_task(
                 answer_question(send, turn, user_id, conversation_id, query)
             )
@@ -331,10 +366,14 @@ async def chat(websocket: WebSocket):
         logger.exception("WebSocket connection failed.")
 
     finally:
-        # Browser left: stop any answer still being written
-        if turn.task is not None and not turn.task.done():
-            turn.task.cancel()
-            await asyncio.gather(turn.task, return_exceptions=True)
+        # Browser left: stop every answer still being written
+        running = [t.task for t in turns.values() if t.running]
+
+        for task in running:
+            task.cancel()
+
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
 
         db.close()
         conn.close()

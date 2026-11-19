@@ -3,6 +3,7 @@ import { connectChatSocket, sendChatRequest } from "../services/chatSocket";
 import type { ChatRequest, ChatResponse, ConnectionStatus } from "../types";
 
 interface PendingRequest {
+  conversationId: string;
   resolve: (response: ChatResponse) => void;
   reject: (error: Error) => void;
   onToken?: (token: string) => void;
@@ -24,15 +25,26 @@ export function useChatSocket(onAuthError?: () => void): {
     request: ChatRequest,
     onToken?: (token: string) => void,
   ) => Promise<ChatResponse>;
+  cancel: (conversationId: string) => void;
 } {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const socketRef = useRef<WebSocket | null>(null);
-  const pendingRef = useRef<PendingRequest | null>(null);
+  // One request in progress per conversation, so several chats can answer
+  // at the same time. Replies are matched by conversation_id.
+  const pendingRef = useRef<Map<string, PendingRequest>>(new Map());
   const onAuthErrorRef = useRef(onAuthError);
 
   useEffect(() => {
     onAuthErrorRef.current = onAuthError;
   }, [onAuthError]);
+
+  const cancel = useCallback((conversationId: string) => {
+    const socket = socketRef.current;
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "cancel", conversation_id: conversationId }));
+    }
+  }, []);
 
   // (Re)start the timer. It runs again on every token, so it only fires
   // if the server goes quiet for REQUEST_TIMEOUT_MS.
@@ -40,38 +52,44 @@ export function useChatSocket(onAuthError?: () => void): {
     window.clearTimeout(pending.timeoutId);
 
     pending.timeoutId = window.setTimeout(() => {
-      if (pendingRef.current !== pending) return;
+      if (pendingRef.current.get(pending.conversationId) !== pending) return;
 
-      pendingRef.current = null;
+      pendingRef.current.delete(pending.conversationId);
       pending.reject(new Error("The assistant took too long to reply. You can retry."));
-      socketRef.current?.close(4000, "Request timed out");
+      cancel(pending.conversationId);
     }, REQUEST_TIMEOUT_MS);
-  }, []);
+  }, [cancel]);
 
   const send = useCallback((request: ChatRequest, onToken?: (token: string) => void) => {
     return new Promise<ChatResponse>((resolve, reject) => {
       const socket = socketRef.current;
+      const conversationId = request.conversation_id;
+
+      if (!conversationId) {
+        reject(new Error("No chat is selected."));
+        return;
+      }
 
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Chat is not connected yet. Please try again shortly."));
         return;
       }
 
-      if (pendingRef.current) {
-        reject(new Error("A reply is already in progress."));
+      if (pendingRef.current.has(conversationId)) {
+        reject(new Error("A reply is already in progress in this chat."));
         return;
       }
 
-      const pending: PendingRequest = { resolve, reject, onToken, timeoutId: 0 };
+      const pending: PendingRequest = { conversationId, resolve, reject, onToken, timeoutId: 0 };
 
-      pendingRef.current = pending;
+      pendingRef.current.set(conversationId, pending);
       armTimeout(pending);
 
       try {
         sendChatRequest(socket, request);
       } catch (error) {
         window.clearTimeout(pending.timeoutId);
-        pendingRef.current = null;
+        pendingRef.current.delete(conversationId);
         reject(asError(error));
       }
     });
@@ -82,13 +100,13 @@ export function useChatSocket(onAuthError?: () => void): {
     let retryTimer: number | undefined;
     let attempt = 0;
 
-    const rejectPending = (message: string) => {
-      const pending = pendingRef.current;
-      if (!pending) return;
+    const rejectAllPending = (message: string) => {
+      for (const pending of pendingRef.current.values()) {
+        window.clearTimeout(pending.timeoutId);
+        pending.reject(new Error(message));
+      }
 
-      window.clearTimeout(pending.timeoutId);
-      pendingRef.current = null;
-      pending.reject(new Error(message));
+      pendingRef.current.clear();
     };
 
     const openSocket = () => {
@@ -110,8 +128,7 @@ export function useChatSocket(onAuthError?: () => void): {
           onData: (raw) => {
             if (stopped || socketRef.current !== socket) return;
 
-            const pending = pendingRef.current;
-            if (!pending) return;
+            let pending: PendingRequest | undefined;
 
             try {
               const parsed: unknown = JSON.parse(String(raw));
@@ -121,6 +138,18 @@ export function useChatSocket(onAuthError?: () => void): {
               }
 
               const value = parsed as Record<string, unknown>;
+
+              // Which chat is this reply for?
+              const conversationId =
+                typeof value.conversation_id === "string" ? value.conversation_id : undefined;
+
+              pending = conversationId
+                ? pendingRef.current.get(conversationId)
+                : pendingRef.current.size === 1
+                  ? [...pendingRef.current.values()][0]
+                  : undefined;
+
+              if (!pending) return; // a late reply for a chat that is no longer waiting
 
               if (typeof value.error === "string") {
                 throw new Error(value.error);
@@ -139,20 +168,19 @@ export function useChatSocket(onAuthError?: () => void): {
               }
 
               window.clearTimeout(pending.timeoutId);
-              pendingRef.current = null;
+              pendingRef.current.delete(pending.conversationId);
 
               pending.resolve({
                 query: typeof value.query === "string" ? value.query : undefined,
                 answer: value.answer,
-                conversation_id:
-                  typeof value.conversation_id === "string"
-                    ? value.conversation_id
-                    : undefined,
+                conversation_id: conversationId,
                 results: Array.isArray(value.results) ? value.results : [],
               });
             } catch (error) {
+              if (!pending) return;
+
               window.clearTimeout(pending.timeoutId);
-              pendingRef.current = null;
+              pendingRef.current.delete(pending.conversationId);
               pending.reject(asError(error));
             }
           },
@@ -161,7 +189,7 @@ export function useChatSocket(onAuthError?: () => void): {
             if (stopped || socketRef.current !== socket) return;
 
             socketRef.current = null;
-            rejectPending("The chat connection closed before a reply arrived. You can retry.");
+            rejectAllPending("The chat connection closed before a reply arrived. You can retry.");
 
             // No valid session (logged out or expired): retrying cannot work.
             if (event.code === WS_AUTH_FAILED) {
@@ -215,7 +243,7 @@ export function useChatSocket(onAuthError?: () => void): {
       const socket = socketRef.current;
       socketRef.current = null;
 
-      rejectPending("The chat connection was closed.");
+      rejectAllPending("The chat connection was closed.");
 
       if (socket) {
         if (socket.readyState === WebSocket.CONNECTING) {
@@ -234,5 +262,5 @@ export function useChatSocket(onAuthError?: () => void): {
     };
   }, [armTimeout]);
 
-  return { status, send };
+  return { status, send, cancel };
 }

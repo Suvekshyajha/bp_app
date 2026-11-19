@@ -26,17 +26,27 @@ export function ChatPage({
     deleteConversation,
   } = useConversations();
 
-  const { messages, addMessage, updateMessage, removeMessage } =
+  const { messages, addMessage, updateMessage, removeMessage, removeChat } =
     useChatMessages(selectedId);
 
-  const { status, send } = useChatSocket(onLogout);
+  const { status, send, cancel } = useChatSocket(onLogout);
 
   const [draft, setDraft] = useState("");
-  const [isSending, setIsSending] = useState(false);
+  // Which chats are waiting for an answer. Several can wait at the same time.
+  const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [apiError, setApiError] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const sendingRef = useRef(false);
+  const sendingRef = useRef<Set<string>>(new Set());
+
+  const isSending = sendingIds.has(selectedId);
+
+  const markSending = useCallback((id: string, on: boolean) => {
+    if (on) sendingRef.current.add(id);
+    else sendingRef.current.delete(id);
+
+    setSendingIds(new Set(sendingRef.current));
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -56,12 +66,11 @@ export function ChatPage({
 
   const sendExistingMessage = useCallback(
     async (query: string, messageId: string, conversationId: string) => {
-      if (sendingRef.current) return;
+      if (sendingRef.current.has(conversationId)) return;
 
-      sendingRef.current = true;
-      setIsSending(true);
+      markSending(conversationId, true);
 
-      updateMessage(messageId, (message) => ({
+      updateMessage(conversationId, messageId, (message) => ({
         ...message,
         status: "pending",
         error: undefined,
@@ -75,14 +84,14 @@ export function ChatPage({
         if (!started) {
           started = true;
 
-          addMessage({
+          addMessage(conversationId, {
             id: assistantId,
             role: "assistant",
             content: token,
             createdAt: new Date().toISOString(),
           });
         } else {
-          updateMessage(assistantId, (message) => ({
+          updateMessage(conversationId, assistantId, (message) => ({
             ...message,
             content: message.content + token,
           }));
@@ -95,7 +104,7 @@ export function ChatPage({
           handleToken,
         );
 
-        updateMessage(messageId, (message) => ({
+        updateMessage(conversationId, messageId, (message) => ({
           ...message,
           status: "sent",
           error: undefined,
@@ -103,13 +112,13 @@ export function ChatPage({
 
         if (started) {
           // Finish the bubble we were streaming into
-          updateMessage(assistantId, (message) => ({
+          updateMessage(conversationId, assistantId, (message) => ({
             ...message,
             content: response.answer,
             context: response.results,
           }));
-        } else {
-          addMessage({
+        } else if (response.answer) {
+          addMessage(conversationId, {
             id: assistantId,
             role: "assistant",
             content: response.answer,
@@ -119,36 +128,35 @@ export function ChatPage({
         }
       } catch (error) {
         // Drop a half-written answer so a retry does not leave a duplicate
-        if (started) removeMessage(assistantId);
+        if (started) removeMessage(conversationId, assistantId);
 
         const message =
           error instanceof Error
             ? error.message
             : "Something went wrong while sending your message.";
 
-        updateMessage(messageId, (current) => ({
+        updateMessage(conversationId, messageId, (current) => ({
           ...current,
           status: "failed",
           error: message,
         }));
       } finally {
-        sendingRef.current = false;
-        setIsSending(false);
+        markSending(conversationId, false);
       }
     },
-    [addMessage, removeMessage, send, updateMessage],
+    [addMessage, markSending, removeMessage, send, updateMessage],
   );
 
   const handleSend = useCallback(
     (rawText?: string) => {
       const query = (rawText ?? draft).trim().slice(0, 4000);
 
-      if (!query || sendingRef.current || !selectedId) return;
+      if (!query || sendingRef.current.has(selectedId) || !selectedId) return;
 
       const messageId = crypto.randomUUID();
       const conversationId = selectedId;
 
-      addMessage({
+      addMessage(conversationId, {
         id: messageId,
         role: "user",
         content: query,
@@ -200,7 +208,11 @@ export function ChatPage({
       "Delete this chat from this browser? Your saved memory on the server is kept.",
     );
 
-    if (confirmed) deleteConversation(id);
+    if (confirmed) {
+      cancel(id); // stop its answer if one is being written
+      removeChat(id);
+      deleteConversation(id);
+    }
   };
 
   const handleSelect = (id: string) => {
@@ -223,9 +235,10 @@ export function ChatPage({
           conversations={conversations}
           selectedId={selectedId}
           displayName={identity.displayName}
-          locked={isSending}
+          locked={false}
           onNew={() => {
-            createConversation();
+            // An empty chat is already a "new chat": do not pile up blank ones
+            if (messages.length > 0) createConversation();
             setSidebarOpen(false);
           }}
           onSelect={handleSelect}
@@ -289,7 +302,8 @@ export function ChatPage({
             value={draft}
             onChange={setDraft}
             onSend={() => handleSend()}
-            disabled={isSending}
+            onStop={() => cancel(selectedId)}
+            sending={isSending}
           />
 
           <p className="composer-disclaimer">

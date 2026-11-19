@@ -13,7 +13,7 @@ export function MessageBubble({ message, onRetry }: { message: ChatMessage; onRe
   const isUser = message.role === "user";
   return (
     <article className={"message-row " + (isUser ? "message-row--user" : "message-row--assistant")}>
-      {!isUser && <div className="assistant-avatar" aria-hidden="true">D</div>}
+      {!isUser && <div className="assistant-avatar" aria-hidden="true">I</div>}
       <div className="message-stack">
         <div className={"message-bubble " + (isUser ? "message-bubble--user" : "message-bubble--assistant")}>
           {isUser ? (
