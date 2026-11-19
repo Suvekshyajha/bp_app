@@ -245,9 +245,19 @@ Then open **http://localhost:5173** and create an account. The frontend must run
 
 If you edit `backend/proto/retriever.proto`, regenerate the Python files into **both** services from the project root:
 
-```powershell
+powershell
 python -m grpc_tools.protoc -I backend/proto --python_out=backend/retriever --grpc_python_out=backend/retriever backend/proto/retriever.proto
 python -m grpc_tools.protoc -I backend/proto --python_out=backend/orchestrator --grpc_python_out=backend/orchestrator backend/proto/retriever.proto
-```
+
 
 Then restart both services.
+
+##screenshot
+login:
+<img width="842" height="800" alt="image" src="https://github.com/user-attachments/assets/ae838513-470a-4c49-a964-f03f588b5a5e" />
+signup:
+<img width="1432" height="952" alt="image" src="https://github.com/user-attachments/assets/8d7f11bf-74e6-4f61-b5bb-fde868609ec8" />
+chat app:
+<img width="1887" height="953" alt="image" src="https://github.com/user-attachments/assets/32d0b6b5-d949-4494-bea3-a4cdd948ab51" />
+
+
