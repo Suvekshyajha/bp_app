@@ -4,22 +4,30 @@ package retriever;
 
 import "google/protobuf/struct.proto";
 
+// Both RPCs are bidirectional streams. One stream can stay open and carry
+// many requests; every response carries the request_id of the request it
+// answers, so replies can arrive in any order.
 service RetrieverService {
-    rpc RetrieveData (RetrieveRequest) returns (stream RetrievedChunk);
-    rpc StoreMessage (StoreMessageRequest) returns (StoreMessageResponse);
+    rpc RetrieveData (stream RetrieveRequest) returns (stream RetrievedChunk);
+    rpc StoreMessage (stream StoreMessageRequest) returns (stream StoreMessageResponse);
 }
-
 
 message RetrieveRequest {
     string query = 1;
     string user_id = 2;
     int32 limit = 3;
+    string request_id = 4;
 }
 
+// A request is answered by zero or more chunks (best match first),
+// then one final message with last = true (and error set if it failed).
 message RetrievedChunk {
     string id = 1;
     float score = 2;
     google.protobuf.Struct payload = 3;
+    string request_id = 4;
+    bool last = 5;
+    string error = 6;
 }
 
 message StoreMessageRequest {
@@ -27,8 +35,12 @@ message StoreMessageRequest {
     string conversation_id = 2;
     string role = 3;
     string content = 4;
+    string request_id = 5;
 }
 
+// Exactly one response per request.
 message StoreMessageResponse {
     string message_id = 1;
+    string request_id = 2;
+    string error = 3;
 }
