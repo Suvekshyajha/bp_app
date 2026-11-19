@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from retriever_client import retrieve, store
 from llm import generate_response
 
-from database import SessionLocal
+from database import SessionLocal, engine
 from models import User, Conversation, Message
 from auth import (
     ALLOWED_ORIGINS,
@@ -79,7 +79,10 @@ async def chat(websocket: WebSocket):
     # 3. Check the session cookie
     session_token = websocket.cookies.get(SESSION_COOKIE_NAME)
 
-    db: Session = SessionLocal()
+    # One dedicated DB connection for this whole chat session (this WebSocket).
+    # The Session runs on top of it. Both are closed in `finally` below.
+    conn = engine.connect()
+    db: Session = SessionLocal(bind=conn)
 
     try:
         user_id = get_session_user_id(db, session_token)
@@ -99,6 +102,11 @@ async def chat(websocket: WebSocket):
             logger.warning("WebSocket rejected: user does not exist.")
             await websocket.close(code=WS_AUTH_FAILED, reason="User not found")
             return
+
+        # End the read transaction. The connection stays open for the whole
+        # chat session, but no transaction (and no lock) stays open while
+        # we sit waiting for the next message.
+        db.rollback()
 
         # 4. Default conversation id (used only if the frontend sends none)
         default_conversation_id = str(uuid.uuid5(
@@ -134,6 +142,9 @@ async def chat(websocket: WebSocket):
                 )
                 return
 
+            # Same idea: the session check above opened a transaction, close it
+            db.rollback()
+
             query = data.get("query")
 
             if not isinstance(query, str) or not query.strip():
@@ -167,6 +178,10 @@ async def chat(websocket: WebSocket):
                     conversation_id,
                     query,
                 )
+
+                # Close the read transaction before the slow Qdrant/LLM calls.
+                # (If the conversation was just created it is already committed.)
+                db.rollback()
 
                 if conversation is None:
                     await websocket.send_json({
@@ -254,3 +269,4 @@ async def chat(websocket: WebSocket):
 
     finally:
         db.close()
+        conn.close()
