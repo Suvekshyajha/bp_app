@@ -21,7 +21,7 @@ export function Sidebar({
 }) {
   return (
     <aside className="sidebar" aria-label="Conversations">
-      <div className="sidebar-brand"><div className="brand-mark">D</div><span>Day2 <strong>BP Chat</strong></span></div>
+      <div className="sidebar-brand"><div className="brand-mark">I</div><span>Info<strong>mate</strong></span></div>
       <button type="button" className="new-chat-button" onClick={onNew} disabled={locked}>
         <span aria-hidden="true">＋</span> New chat
       </button>

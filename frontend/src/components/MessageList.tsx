@@ -50,7 +50,7 @@ export function MessageList({
         {messages.length === 0 ? (
           <section className="empty-state" aria-labelledby="welcome-title">
             <div className="empty-mark" aria-hidden="true">D</div>
-            <p className="eyebrow">DAY2 BP CHAT</p>
+            <p className="eyebrow">INFOMATE</p>
             <h1 id="welcome-title">A clearer place to think.</h1>
             <p className="empty-copy">Ask a question. When it helps, related messages from your past conversations can add context.</p>
             <div className="prompt-list" aria-label="Example prompts">

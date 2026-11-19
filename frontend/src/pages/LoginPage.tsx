@@ -82,10 +82,10 @@ export function LoginPage({
     <main className="login-page">
       <section className="login-card" aria-labelledby="login-title">
         <div className="brand-mark brand-mark--large" aria-hidden="true">
-          D
+          I
         </div>
 
-        <p className="eyebrow">DAY2 BP CHAT</p>
+        <p className="eyebrow">INFOMATE</p>
 
         <h1 id="login-title">
           {isSignup
