@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from history import router as history_router
 import models  # noqa: F401  (registers the tables)
 import retriever_client
 import routes
@@ -14,6 +14,12 @@ from database import Base, engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # create_all skips tables that already exist, so it would never add a new
+    # index to an old database. Create any missing ones here.
+    for table in Base.metadata.sorted_tables:
+        for index in table.indexes:
+            index.create(bind=engine, checkfirst=True)
+
     yield
     # Close the long-lived gRPC streams to the retriever
     await retriever_client.close()
@@ -31,6 +37,9 @@ app.add_middleware(
 
 # The frontend calls /api/health, /api/me, /api/login ...
 app.include_router(routes.router, prefix="/api")
+
+# Chat list and message history: /api/conversations ...
+app.include_router(history_router, prefix="/api")
 
 # WebSocket: /ws/chat
 app.include_router(websocket.router)

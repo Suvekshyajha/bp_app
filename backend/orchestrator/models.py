@@ -6,6 +6,7 @@ from sqlalchemy import (
     Text,
     DateTime,
     ForeignKey,
+    Index,
 )
 from sqlalchemy.orm import relationship
 
@@ -44,6 +45,11 @@ class Conversation(Base):
 
     user = relationship("User", back_populates="conversations")
 
+    __table_args__ = (
+        # Lists a user's chats
+        Index("ix_conversations_user", "user_id"),
+    )
+
     messages = relationship(
         "Message",
         back_populates="conversation",
@@ -71,6 +77,16 @@ class Message(Base):
     conversation = relationship(
         "Conversation",
         back_populates="messages",
+    )
+
+    __table_args__ = (
+        # Lets a page of one chat's messages be read straight from the index
+        Index(
+            "ix_messages_conversation_created",
+            "conversation_id",
+            "created_at",
+            "id",
+        ),
     )
 
 
