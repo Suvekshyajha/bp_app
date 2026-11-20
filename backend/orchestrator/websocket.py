@@ -66,6 +66,9 @@ def get_or_create_conversation(
 HISTORY_MAX_MESSAGES = 10
 HISTORY_MAX_CHARS = 6000
 
+# How many related older messages of this chat to add on top of the history
+RETRIEVAL_LIMIT = 5
+
 
 def load_chat_history(db: Session, conversation_id: str) -> list[dict]:
     """The latest messages of one chat, oldest first, ready for the LLM.
@@ -96,6 +99,27 @@ def load_chat_history(db: Session, conversation_id: str) -> list[dict]:
     history.reverse()  # oldest first, the order the chat was written in
 
     return history
+
+
+def drop_messages_already_in_history(
+    results: list[dict],
+    history: list[dict],
+) -> list[dict]:
+    """Remove retrieved messages the model already gets as chat history.
+
+    Retrieval searches the same chat as the history, so the most similar
+    messages are often the recent ones. Sending them twice wastes context.
+    """
+    seen = {(turn["role"], turn["content"]) for turn in history}
+
+    return [
+        item
+        for item in results
+        if (
+            item.get("payload", {}).get("role"),
+            item.get("payload", {}).get("content"),
+        ) not in seen
+    ]
 
 
 # Most answers one browser connection may have in progress at once
@@ -157,8 +181,17 @@ async def answer_question(
 
             # 6. Retrieve relevant past messages. They stream back over the
             #    gRPC stream and are collected here (best match first).
-            #    Limited to this user AND this one chat.
-            results = await retrieve(query, user_id, conversation_id, 5)
+            #    Limited to this user AND this one chat, and only matches
+            #    above the relevance threshold come back (see retriever).
+            #    Ask for extra: the ones already in the history are removed.
+            results = await retrieve(
+                query,
+                user_id,
+                conversation_id,
+                RETRIEVAL_LIMIT + len(history),
+            )
+            results = drop_messages_already_in_history(results, history)
+            results = results[:RETRIEVAL_LIMIT]
 
             # 7. Save the user message in SQLite
             db.add(Message(
