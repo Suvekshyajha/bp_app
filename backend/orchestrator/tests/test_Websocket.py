@@ -245,3 +245,98 @@ def test_cannot_write_into_another_users_conversation(client, db, user):
 
     assert reply["error"] == "Conversation not found."
     assert "intruder" not in [m.content for m in db.query(Message)]
+
+
+# ---------- in-conversation history ----------
+
+def test_second_question_gets_the_first_exchange_as_history(logged_in, monkeypatch):
+    seen = []
+
+    async def spy_stream(query, results, history=None):
+        seen.append({"query": query, "history": history})
+        yield "answer to " + query
+
+    monkeypatch.setattr(websocket, "stream_response", spy_stream)
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        ws.send_json({"query": "first", "conversation_id": CHAT})
+        receive_until_done(ws)
+
+        ws.send_json({"query": "second", "conversation_id": CHAT})
+        receive_until_done(ws)
+
+    assert seen[0]["history"] == []
+    assert seen[1]["history"] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "answer to first"},
+    ]  # the new question itself is not in its own history
+
+
+def test_history_never_comes_from_another_chat(logged_in, monkeypatch):
+    seen = []
+
+    async def spy_stream(query, results, history=None):
+        seen.append(history)
+        yield "ok"
+
+    monkeypatch.setattr(websocket, "stream_response", spy_stream)
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        ws.send_json({"query": "in chat one", "conversation_id": CHAT})
+        receive_until_done(ws)
+
+        ws.send_json({"query": "in chat two", "conversation_id": "conv-87654321"})
+        receive_until_done(ws)
+
+    assert seen[1] == []
+
+
+def test_load_chat_history_keeps_the_newest_messages_in_reading_order(
+    db, user, monkeypatch
+):
+    from models import Conversation
+
+    monkeypatch.setattr(websocket, "HISTORY_MAX_MESSAGES", 3)
+
+    db.add(Conversation(id=CHAT, user_id=user.id, title="t"))
+    base = naive_utc_now()
+
+    for number in range(5):
+        db.add(Message(
+            id=f"m{number}",
+            conversation_id=CHAT,
+            role="user" if number % 2 == 0 else "assistant",
+            content=f"message {number}",
+            created_at=base + timedelta(seconds=number),
+        ))
+    db.commit()
+
+    history = websocket.load_chat_history(db, CHAT)
+
+    assert [m["content"] for m in history] == [
+        "message 2", "message 3", "message 4"
+    ]
+
+
+def test_load_chat_history_stops_at_the_size_budget(db, user, monkeypatch):
+    from models import Conversation
+
+    monkeypatch.setattr(websocket, "HISTORY_MAX_CHARS", 100)
+
+    db.add(Conversation(id=CHAT, user_id=user.id, title="t"))
+    base = naive_utc_now()
+
+    for number in range(3):
+        db.add(Message(
+            id=f"m{number}",
+            conversation_id=CHAT,
+            role="user",
+            content=f"{number}" * 60,
+            created_at=base + timedelta(seconds=number),
+        ))
+    db.commit()
+
+    history = websocket.load_chat_history(db, CHAT)
+
+    # Only the newest fits in 100 characters
+    assert [m["content"] for m in history] == ["2" * 60]
