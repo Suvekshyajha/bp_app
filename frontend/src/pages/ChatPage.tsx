@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Identity } from "../types";
 import { getHealth } from "../api";
-import { useChatSocket } from "../hooks/useChatSocket";
+import { RateLimitError, useChatSocket } from "../hooks/useChatSocket";
 import { useConversations } from "../hooks/useConversations";
 import { useChatMessages } from "../hooks/useChatMessages";
 import { Sidebar } from "../components/Sidebar";
@@ -20,14 +20,34 @@ export function ChatPage({
   const {
     conversations,
     selectedId,
+    status: listStatus,
+    hasMore,
+    loadingMore,
+    loadMore,
+    retryLoad: retryConversations,
     createConversation,
     selectConversation,
     touchConversation,
+    markSynced,
     deleteConversation,
-  } = useConversations();
+  } = useConversations(onLogout);
 
-  const { messages, addMessage, updateMessage, removeMessage, removeChat } =
-    useChatMessages(selectedId);
+  // A brand-new chat the server has not seen has no history to load
+  const selectedIsLocal =
+    conversations.find((conversation) => conversation.id === selectedId)?.isLocal ?? false;
+
+  const {
+    messages,
+    historyStatus,
+    hasEarlier,
+    loadingEarlier,
+    loadEarlier,
+    retryLoad: retryMessages,
+    addMessage,
+    updateMessage,
+    removeMessage,
+    removeChat,
+  } = useChatMessages(selectedId, selectedIsLocal, onLogout);
 
   const { status, send, cancel } = useChatSocket(onLogout);
 
@@ -38,6 +58,23 @@ export function ChatPage({
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const sendingRef = useRef<Set<string>>(new Set());
+
+  // After a "too many messages" reply, sending is paused until this time
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const cooldownSeconds = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+
+  useEffect(() => {
+    if (cooldownUntil <= Date.now()) return;
+
+    const timer = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      if (current >= cooldownUntil) window.clearInterval(timer);
+    }, 500);
+
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
 
   const isSending = sendingIds.has(selectedId);
 
@@ -110,6 +147,8 @@ export function ChatPage({
           error: undefined,
         }));
 
+        markSynced(conversationId); // the server now has this chat
+
         if (started) {
           // Finish the bubble we were streaming into
           updateMessage(conversationId, assistantId, (message) => ({
@@ -130,6 +169,12 @@ export function ChatPage({
         // Drop a half-written answer so a retry does not leave a duplicate
         if (started) removeMessage(conversationId, assistantId);
 
+        if (error instanceof RateLimitError) {
+          const until = Date.now() + error.retryAfter * 1000;
+          setNow(Date.now());
+          setCooldownUntil(until);
+        }
+
         const message =
           error instanceof Error
             ? error.message
@@ -144,7 +189,7 @@ export function ChatPage({
         markSending(conversationId, false);
       }
     },
-    [addMessage, markSending, removeMessage, send, updateMessage],
+    [addMessage, markSending, markSynced, removeMessage, send, updateMessage],
   );
 
   const handleSend = useCallback(
@@ -152,6 +197,10 @@ export function ChatPage({
       const query = (rawText ?? draft).trim().slice(0, 4000);
 
       if (!query || sendingRef.current.has(selectedId) || !selectedId) return;
+
+      // Wait until this chat's history is shown, and respect the rate limit.
+      // The draft stays in the box.
+      if (historyStatus !== "ready" || cooldownSeconds > 0) return;
 
       const messageId = crypto.randomUUID();
       const conversationId = selectedId;
@@ -169,7 +218,7 @@ export function ChatPage({
 
       void sendExistingMessage(query, messageId, conversationId);
     },
-    [addMessage, draft, selectedId, sendExistingMessage, touchConversation],
+    [addMessage, cooldownSeconds, draft, historyStatus, selectedId, sendExistingMessage, touchConversation],
   );
 
   const handleRetry = useCallback(
@@ -177,6 +226,8 @@ export function ChatPage({
       const failedMessage = messages.find(
         (message) => message.id === messageId,
       );
+
+      if (cooldownSeconds > 0) return;
 
       if (
         !failedMessage ||
@@ -194,7 +245,7 @@ export function ChatPage({
         selectedId,
       );
     },
-    [messages, selectedId, sendExistingMessage, touchConversation],
+    [cooldownSeconds, messages, selectedId, sendExistingMessage, touchConversation],
   );
 
   const handleLogout = () => {
@@ -205,7 +256,7 @@ export function ChatPage({
 
   const handleDelete = (id: string) => {
     const confirmed = window.confirm(
-      "Delete this chat from this browser? Your saved memory on the server is kept.",
+      "Remove this chat from your list in this browser? Your saved memory on the server is kept.",
     );
 
     if (confirmed) {
@@ -236,6 +287,11 @@ export function ChatPage({
           selectedId={selectedId}
           displayName={identity.displayName}
           locked={false}
+          status={listStatus}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={() => void loadMore()}
+          onReload={retryConversations}
           onNew={() => {
             // An empty chat is already a "new chat": do not pile up blank ones
             if (messages.length > 0) createConversation();
@@ -283,9 +339,21 @@ export function ChatPage({
           </ErrorBanner>
         )}
 
+        {cooldownSeconds > 0 && (
+          <ErrorBanner>
+            {`You are sending messages too quickly. You can send again in ${cooldownSeconds}s.`}
+          </ErrorBanner>
+        )}
+
         <MessageList
+          key={selectedId}
           messages={messages}
           isSending={isSending}
+          historyStatus={historyStatus}
+          hasEarlier={hasEarlier}
+          loadingEarlier={loadingEarlier}
+          onLoadEarlier={() => void loadEarlier()}
+          onReload={retryMessages}
           onRetry={handleRetry}
           onPrompt={(prompt) => {
             setDraft(prompt);
