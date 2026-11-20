@@ -176,15 +176,20 @@ def _streams() -> tuple[_Multiplexer, _Multiplexer]:
 async def retrieve_stream(
     query: str,
     user_id: str,
+    conversation_id: str,
     limit: int = 5,
 ) -> AsyncIterator[dict]:
-    """Yield retrieved chunks one by one, best match first, as they arrive."""
+    """Yield retrieved chunks one by one, best match first, as they arrive.
+
+    Only messages of this user AND this one chat are searched.
+    """
 
     retrieve_mux, _ = _streams()
 
     request = retriever_pb2.RetrieveRequest(
         query=query,
         user_id=user_id,
+        conversation_id=conversation_id,
         limit=limit,
     )
 
@@ -202,12 +207,17 @@ async def retrieve_stream(
         }
 
 
-async def retrieve(query: str, user_id: str, limit: int = 5) -> list[dict]:
+async def retrieve(
+    query: str,
+    user_id: str,
+    conversation_id: str,
+    limit: int = 5,
+) -> list[dict]:
     """Same as retrieve_stream, collected into a list."""
 
     return [
         item
-        async for item in retrieve_stream(query, user_id, limit)
+        async for item in retrieve_stream(query, user_id, conversation_id, limit)
     ]
 
 
