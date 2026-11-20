@@ -46,7 +46,7 @@ sys.modules["retriever_client"] = fake_retriever
 fake_llm = types.ModuleType("llm")
 
 
-async def fake_stream_response(query, results):
+async def fake_stream_response(query, results, history=None):
     for token in ("Hel", "lo"):
         yield token
 
