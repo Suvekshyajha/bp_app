@@ -3,6 +3,8 @@ import os
 from dotenv import load_dotenv
 from groq import AsyncGroq, Groq
 
+from prompt_budget import trim_history
+
 
 load_dotenv()
 
@@ -14,6 +16,11 @@ if not GROQ_API_KEY:
 
 client = Groq(api_key=GROQ_API_KEY, timeout=30.0)
 async_client = AsyncGroq(api_key=GROQ_API_KEY, timeout=30.0)
+
+# The whole prompt (system + history + retrieved excerpts + question) must
+# stay under this many characters. History gets whatever the other parts
+# leave free. 24000 characters is about 6000 tokens.
+PROMPT_BUDGET_CHARS = int(os.getenv("PROMPT_BUDGET_CHARS", "24000"))
 
 SYSTEM_PROMPT = (
     "You are a helpful conversational assistant. "
@@ -69,10 +76,19 @@ def build_messages(
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    for turn in history or []:
-        # Only real chat roles: never let a stored row act as "system"
-        if turn.get("role") in ("user", "assistant") and turn.get("content"):
-            messages.append({"role": turn["role"], "content": turn["content"]})
+    # Only real chat roles: never let a stored row act as "system"
+    usable = [
+        turn for turn in history or []
+        if turn.get("role") in ("user", "assistant") and turn.get("content")
+    ]
+
+    # The history may use what the system prompt, the retrieved excerpts
+    # and the new question leave free: a long question or long excerpts
+    # mean less history, a short one means more.
+    remaining = PROMPT_BUDGET_CHARS - len(SYSTEM_PROMPT) - len(user_content)
+
+    for turn in trim_history(usable, remaining):
+        messages.append({"role": turn["role"], "content": turn["content"]})
 
     messages.append({"role": "user", "content": user_content})
 
