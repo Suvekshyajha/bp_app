@@ -104,4 +104,4 @@ describe("error handling", () => {
 
     await expect(getConversations()).rejects.toThrow("HTTP 500");
   });
-});co
+});
