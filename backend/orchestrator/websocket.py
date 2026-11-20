@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import re
 import uuid
 
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from retriever_client import retrieve, store, RetrieverError
 from llm import stream_response
+from rate_limit import chat_limiter
 
 from database import SessionLocal, engine
 from models import User, Conversation, Message
@@ -287,6 +289,22 @@ async def chat(websocket: WebSocket):
                 await send({"error": "Message must be a JSON object."})
                 continue
 
+            # Heartbeat from the browser: answer it and wait for the next message.
+            # It checks the session, so an expired login is closed (and its DB
+            # connection freed), but it does NOT extend the session. Only real
+            # chat messages count as activity.
+            if data.get("type") == "ping":
+                if get_session_user_id(db, session_token) != user_id:
+                    await websocket.close(
+                        code=WS_AUTH_FAILED,
+                        reason="Session ended",
+                    )
+                    return
+
+                db.rollback()
+                await send({"type": "pong"})
+                continue
+
             requested_id = data.get("conversation_id")
 
             # Which conversation is this message for? (one per "New chat")
@@ -308,6 +326,27 @@ async def chat(websocket: WebSocket):
 
                 if target and target.running and target.streaming:
                     target.task.cancel()
+                continue
+
+            # Per-user rate limit. It counts this user's messages across all of
+            # their open tabs, and runs before any database or AI work so a
+            # flood of messages stays cheap. The error carries the conversation
+            # id so the browser can tell which chat it belongs to.
+            allowed, retry_after = chat_limiter.allow(user_id)
+
+            if not allowed:
+                wait = max(1, math.ceil(retry_after))
+
+                logger.warning("Rate limit reached for user: %s", user_id)
+
+                await send({
+                    "error": (
+                        "You are sending messages too quickly. "
+                        f"Please wait {wait} seconds and try again."
+                    ),
+                    "conversation_id": conversation_id,
+                    "retry_after": wait,
+                })
                 continue
 
             # Logging out (or an expired session) ends the chat immediately
