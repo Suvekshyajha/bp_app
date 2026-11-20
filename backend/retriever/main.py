@@ -78,11 +78,15 @@ class RetrieverService(retriever_pb2_grpc.RetrieverServiceServicer):
     async def _retrieve_one(self, request):
         request_id = request.request_id
 
-        if not request.user_id or not request.query.strip():
+        if (
+            not request.user_id
+            or not request.conversation_id
+            or not request.query.strip()
+        ):
             yield retriever_pb2.RetrievedChunk(
                 request_id=request_id,
                 last=True,
-                error="user_id and query are required",
+                error="user_id, conversation_id and query are required",
             )
             return
 
@@ -92,6 +96,7 @@ class RetrieverService(retriever_pb2_grpc.RetrieverServiceServicer):
                     retrieve_messages,
                     query=request.query,
                     user_id=request.user_id,
+                    conversation_id=request.conversation_id,
                     limit=request.limit or 5,
                 )
 
