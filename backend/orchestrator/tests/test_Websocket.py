@@ -366,3 +366,57 @@ def test_retrieval_is_asked_for_this_user_and_this_chat_only(
         ("in chat one", user.id, CHAT),
         ("in chat two", user.id, "conv-87654321"),
     ]
+
+
+# ---------- retrieved messages are not repeated from the history ----------
+
+def test_retrieved_messages_already_in_the_history_are_removed(
+    logged_in, monkeypatch
+):
+    asked = []
+    given = []
+
+    async def spy_retrieve(query, user_id, conversation_id, limit):
+        asked.append(limit)
+
+        if query != "second":
+            return []
+
+        return [
+            {"id": "1", "score": 0.9,
+             "payload": {"role": "user", "content": "first"}},      # in history
+            {"id": "2", "score": 0.8,
+             "payload": {"role": "user", "content": "something older"}},
+        ]
+
+    async def spy_stream(query, results, history=None):
+        given.append(results)
+        yield "reply"
+
+    monkeypatch.setattr(websocket, "retrieve", spy_retrieve)
+    monkeypatch.setattr(websocket, "stream_response", spy_stream)
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        ws.send_json({"query": "first", "conversation_id": CHAT})
+        receive_until_done(ws)
+
+        ws.send_json({"query": "second", "conversation_id": CHAT})
+        done = receive_until_done(ws)[-1]
+
+    # History is "first" + "reply", so 2 extra were asked for
+    assert asked == [websocket.RETRIEVAL_LIMIT, websocket.RETRIEVAL_LIMIT + 2]
+    assert [r["id"] for r in given[1]] == ["2"]
+    assert [r["id"] for r in done["results"]] == ["2"]
+
+
+def test_drop_messages_already_in_history_matches_role_and_content():
+    history = [{"role": "user", "content": "hello"}]
+    results = [
+        {"id": "1", "payload": {"role": "user", "content": "hello"}},
+        {"id": "2", "payload": {"role": "assistant", "content": "hello"}},
+        {"id": "3", "payload": {}},
+    ]
+
+    kept = websocket.drop_messages_already_in_history(results, history)
+
+    assert [r["id"] for r in kept] == ["2", "3"]
