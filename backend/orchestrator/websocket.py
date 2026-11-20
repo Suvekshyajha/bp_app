@@ -62,6 +62,42 @@ def get_or_create_conversation(
     return conversation
 
 
+# How much of THIS chat the model gets to see on each question
+HISTORY_MAX_MESSAGES = 10
+HISTORY_MAX_CHARS = 6000
+
+
+def load_chat_history(db: Session, conversation_id: str) -> list[dict]:
+    """The latest messages of one chat, oldest first, ready for the LLM.
+
+    Call it BEFORE the new question is saved, so the question is not
+    sent twice. The newest messages are kept first; older ones are dropped
+    once the size budget is used up.
+    """
+    rows = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(HISTORY_MAX_MESSAGES)
+        .all()
+    )
+
+    history: list[dict] = []
+    used = 0
+
+    for row in rows:  # newest first
+        used += len(row.content)
+
+        if history and used > HISTORY_MAX_CHARS:
+            break
+
+        history.append({"role": row.role, "content": row.content})
+
+    history.reverse()  # oldest first, the order the chat was written in
+
+    return history
+
+
 # Most answers one browser connection may have in progress at once
 MAX_ACTIVE_TURNS = 3
 
@@ -104,6 +140,14 @@ async def answer_question(
                 query,
             )
 
+            # What was said earlier in THIS chat (so follow-ups make sense).
+            # Read before the new question is saved below.
+            history = (
+                load_chat_history(db, conversation_id)
+                if conversation is not None
+                else []
+            )
+
             # Close the read transaction before the slow retriever/LLM calls.
             db.rollback()
 
@@ -133,7 +177,7 @@ async def answer_question(
             # 9. Stream the answer token by token
             parts: list[str] = []
             cancelled = False
-            tokens = stream_response(query, results)
+            tokens = stream_response(query, results, history)
             turn.streaming = True
 
             try:
