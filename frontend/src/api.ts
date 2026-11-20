@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./config";
+import type { Page, ServerConversation, ServerMessage } from "./types";
 
 export interface HealthResponse {
   status: string;
@@ -17,6 +18,33 @@ export class UnauthorizedError extends Error {
   }
 }
 
+// Thrown when a chat does not exist for this user (HTTP 404)
+export class NotFoundError extends Error {
+  constructor() {
+    super("Not found.");
+  }
+}
+
+// Shared GET helper for the cookie-protected endpoints
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(API_BASE_URL + path, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (response.status === 401) throw new UnauthorizedError();
+  if (response.status === 404) throw new NotFoundError();
+  if (!response.ok) throw new Error("HTTP " + response.status);
+  return (await response.json()) as T;
+}
+
+function pageQuery(cursor?: string | null, limit?: number): string {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
+  const text = params.toString();
+  return text ? "?" + text : "";
+}
+
 export async function getHealth(): Promise<HealthResponse> {
   const response = await fetch(API_BASE_URL + "/api/health", {
     headers: { Accept: "application/json" },
@@ -29,13 +57,30 @@ export async function getHealth(): Promise<HealthResponse> {
 
 // Asks the server who is logged in (uses the session cookie)
 export async function getMe(): Promise<MeResponse> {
-  const response = await fetch(API_BASE_URL + "/api/me", {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-  });
-  if (response.status === 401) throw new UnauthorizedError();
-  if (!response.ok) throw new Error("HTTP " + response.status);
-  return (await response.json()) as MeResponse;
+  return getJson<MeResponse>("/api/me");
+}
+
+// One page of the user's chats, most recently active first
+export function getConversations(
+  cursor?: string | null,
+  limit?: number,
+): Promise<Page<ServerConversation>> {
+  return getJson("/api/conversations" + pageQuery(cursor, limit));
+}
+
+// One page of a chat's messages. No cursor = the latest page.
+// Each page is oldest-first; next_cursor leads to OLDER messages.
+export function getMessages(
+  conversationId: string,
+  cursor?: string | null,
+  limit?: number,
+): Promise<Page<ServerMessage>> {
+  return getJson(
+    "/api/conversations/" +
+      encodeURIComponent(conversationId) +
+      "/messages" +
+      pageQuery(cursor, limit),
+  );
 }
 
 // Ends the session on the server and clears the cookie
