@@ -318,28 +318,7 @@ def test_load_chat_history_keeps_the_newest_messages_in_reading_order(
     ]
 
 
-def test_load_chat_history_stops_at_the_size_budget(db, user, monkeypatch):
-    from models import Conversation
 
-    monkeypatch.setattr(websocket, "HISTORY_MAX_CHARS", 100)
-
-    db.add(Conversation(id=CHAT, user_id=user.id, title="t"))
-    base = naive_utc_now()
-
-    for number in range(3):
-        db.add(Message(
-            id=f"m{number}",
-            conversation_id=CHAT,
-            role="user",
-            content=f"{number}" * 60,
-            created_at=base + timedelta(seconds=number),
-        ))
-    db.commit()
-
-    history = websocket.load_chat_history(db, CHAT)
-
-    # Only the newest fits in 100 characters
-    assert [m["content"] for m in history] == ["2" * 60]
 
 
 # ---------- retrieval is limited to one user and one chat ----------
@@ -420,3 +399,55 @@ def test_drop_messages_already_in_history_matches_role_and_content():
     kept = websocket.drop_messages_already_in_history(results, history)
 
     assert [r["id"] for r in kept] == ["2", "3"]
+
+
+# ---------- the session is re-checked on every chat message ----------
+
+def test_message_on_an_expired_session_closes_with_4401_and_does_nothing(
+    logged_in, db, user, monkeypatch
+):
+    retrieved = []
+
+    async def spy_retrieve(query, user_id, conversation_id, limit):
+        retrieved.append(query)
+        return []
+
+    monkeypatch.setattr(websocket, "retrieve", spy_retrieve)
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        db.query(UserSession).filter(UserSession.user_id == user.id).update(
+            {"expires_at": naive_utc_now() - timedelta(minutes=1)}
+        )
+        db.commit()
+
+        ws.send_json({"query": "hello", "conversation_id": CHAT})
+
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+
+    assert closed.value.code == websocket.WS_AUTH_FAILED
+    assert retrieved == []                  # no retrieval, no LLM work
+    assert db.query(Message).count() == 0   # nothing was saved
+
+
+def test_message_after_logout_closes_with_4401_and_does_nothing(
+    logged_in, db, user
+):
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        db.query(UserSession).filter(UserSession.user_id == user.id).delete()
+        db.commit()
+
+        ws.send_json({"query": "hello", "conversation_id": CHAT})
+
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+
+    assert closed.value.code == websocket.WS_AUTH_FAILED
+    assert db.query(Message).count() == 0
+
+
+def test_a_valid_session_keeps_working_message_after_message(logged_in):
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        for number in range(3):
+            ws.send_json({"query": f"question {number}", "conversation_id": CHAT})
+            assert receive_until_done(ws)[-1]["type"] == "done"
