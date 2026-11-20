@@ -1,22 +1,33 @@
 import type { Conversation } from "../types";
+import type { ListStatus } from "../hooks/useConversations";
 
 export function Sidebar({
   conversations,
   selectedId,
   displayName,
   locked,
+  status,
+  hasMore,
+  loadingMore,
   onNew,
   onSelect,
   onDelete,
+  onLoadMore,
+  onReload,
   onLogout,
 }: {
   conversations: Conversation[];
   selectedId: string;
   displayName: string;
   locked: boolean;
+  status: ListStatus;
+  hasMore: boolean;
+  loadingMore: boolean;
   onNew: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onLoadMore: () => void;
+  onReload: () => void;
   onLogout: () => void;
 }) {
   return (
@@ -25,7 +36,7 @@ export function Sidebar({
       <button type="button" className="new-chat-button" onClick={onNew} disabled={locked}>
         <span aria-hidden="true">＋</span> New chat
       </button>
-      <div className="conversation-heading">YOUR CHATS <span>{conversations.length}</span></div>
+      <div className="conversation-heading">YOUR CHATS <span>{conversations.length}{hasMore ? "+" : ""}</span></div>
       <nav className="conversation-nav" aria-label="Your conversations">
         {conversations.map((conversation) => (
           <div className={"conversation-item " + (conversation.id === selectedId ? "is-active" : "")} key={conversation.id}>
@@ -49,9 +60,21 @@ export function Sidebar({
             >×</button>
           </div>
         ))}
+        {status === "loading" && <p className="list-note">Loading chats…</p>}
+        {status === "error" && (
+          <p className="list-note">
+            Could not load your chats.{" "}
+            <button type="button" className="load-more-button" onClick={onReload}>Retry</button>
+          </p>
+        )}
+        {hasMore && (
+          <button type="button" className="load-more-button" onClick={onLoadMore} disabled={loadingMore || locked}>
+            {loadingMore ? "Loading…" : "Load more chats"}
+          </button>
+        )}
       </nav>
       <div className="sidebar-bottom">
-        <div className="demo-note"><span aria-hidden="true">ⓘ</span><p>Demo mode. Chats are saved only in this browser.</p></div>
+        <div className="demo-note"><span aria-hidden="true">ⓘ</span><p>Your chats are saved on the server and load as you scroll.</p></div>
         <div className="account-row">
           <div className="account-avatar" aria-hidden="true">{displayName.slice(0, 1).toUpperCase()}</div>
           <div className="account-copy"><strong>{displayName}</strong><span>Local demo account</span></div>
