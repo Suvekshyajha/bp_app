@@ -157,7 +157,8 @@ async def answer_question(
 
             # 6. Retrieve relevant past messages. They stream back over the
             #    gRPC stream and are collected here (best match first).
-            results = await retrieve(query, user_id, 5)
+            #    Limited to this user AND this one chat.
+            results = await retrieve(query, user_id, conversation_id, 5)
 
             # 7. Save the user message in SQLite
             db.add(Message(
