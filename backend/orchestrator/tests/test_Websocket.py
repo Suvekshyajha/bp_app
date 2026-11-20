@@ -340,3 +340,29 @@ def test_load_chat_history_stops_at_the_size_budget(db, user, monkeypatch):
 
     # Only the newest fits in 100 characters
     assert [m["content"] for m in history] == ["2" * 60]
+
+
+# ---------- retrieval is limited to one user and one chat ----------
+
+def test_retrieval_is_asked_for_this_user_and_this_chat_only(
+    logged_in, user, monkeypatch
+):
+    calls = []
+
+    async def spy_retrieve(query, user_id, conversation_id, limit):
+        calls.append((query, user_id, conversation_id))
+        return []
+
+    monkeypatch.setattr(websocket, "retrieve", spy_retrieve)
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        ws.send_json({"query": "in chat one", "conversation_id": CHAT})
+        receive_until_done(ws)
+
+        ws.send_json({"query": "in chat two", "conversation_id": "conv-87654321"})
+        receive_until_done(ws)
+
+    assert calls == [
+        ("in chat one", user.id, CHAT),
+        ("in chat two", user.id, "conv-87654321"),
+    ]

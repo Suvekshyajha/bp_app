@@ -25,7 +25,7 @@ class RetrieverError(Exception):
     pass
 
 
-async def fake_retrieve(query, user_id, limit):
+async def fake_retrieve(query, user_id, conversation_id, limit):
     return []
 
 
@@ -141,4 +141,4 @@ def user(db):
 def logged_in(client, db, user):
     """A client that is logged in as `user`."""
     login(client, db, user)
-    return client
+    return clientcp
