@@ -152,6 +152,9 @@ button:disabled { cursor: not-allowed; opacity: .52; }
 .send-button span:last-child { display: grid; width: 17px; height: 17px; place-items: center; border-radius: 5px; background: #ffffff26; font-size: 13px; }
 .composer-disclaimer { width: min(820px, 100%); margin: 8px auto 0; color: #b1b0bb; font-size: 9px; text-align: center; }
 
+.load-earlier-button, .load-more-button { align-self: center; padding: 6px 14px; border: 1px solid #e8e7ef; border-radius: 999px; background: #fff; color: #6f6c83; font-size: 13px; cursor: pointer; }
+.load-earlier-button:disabled, .load-more-button:disabled { opacity: .6; cursor: default; }
+.history-notice, .list-note { text-align: center; color: #6f6c83; font-size: 13px; }
 .login-page { display: grid; min-height: 100dvh; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 35%, #f1efff 0, #f8f8fb 55%, #f5f5f8 100%); }
 .login-card { width: min(420px, 100%); padding: 38px; border: 1px solid #ecebf2; border-radius: 18px; background: rgba(255,255,255,.92); box-shadow: 0 18px 60px #302b5b13; }
 .brand-mark--large { width: 42px; height: 42px; margin-bottom: 25px; border-radius: 13px; font-size: 20px; }
