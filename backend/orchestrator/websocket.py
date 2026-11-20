@@ -62,9 +62,9 @@ def get_or_create_conversation(
     return conversation
 
 
-# How much of THIS chat the model gets to see on each question
-HISTORY_MAX_MESSAGES = 10
-HISTORY_MAX_CHARS = 6000
+# Most messages of THIS chat read from the database for each question.
+# How many of them reach the model is decided in llm.py by the prompt budget.
+HISTORY_MAX_MESSAGES = 20
 
 # How many related older messages of this chat to add on top of the history
 RETRIEVAL_LIMIT = 5
@@ -74,8 +74,7 @@ def load_chat_history(db: Session, conversation_id: str) -> list[dict]:
     """The latest messages of one chat, oldest first, ready for the LLM.
 
     Call it BEFORE the new question is saved, so the question is not
-    sent twice. The newest messages are kept first; older ones are dropped
-    once the size budget is used up.
+    sent twice.
     """
     rows = (
         db.query(Message)
@@ -85,20 +84,11 @@ def load_chat_history(db: Session, conversation_id: str) -> list[dict]:
         .all()
     )
 
-    history: list[dict] = []
-    used = 0
-
-    for row in rows:  # newest first
-        used += len(row.content)
-
-        if history and used > HISTORY_MAX_CHARS:
-            break
-
-        history.append({"role": row.role, "content": row.content})
-
-    history.reverse()  # oldest first, the order the chat was written in
-
-    return history
+    # rows are newest first; the chat is read oldest first
+    return [
+        {"role": row.role, "content": row.content}
+        for row in reversed(rows)
+    ]
 
 
 def drop_messages_already_in_history(
