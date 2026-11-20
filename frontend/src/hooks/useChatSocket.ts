@@ -15,6 +15,17 @@ const WS_AUTH_FAILED = 4401; // no valid session: log in again
 const WS_ORIGIN_BLOCKED = 4403; // this website is not allowed by the backend
 // Both must match backend/orchestrator/websocket.py
 
+// The server refused the message because this user sent too many too fast.
+// retryAfter is in seconds (backend sends it as "retry_after").
+export class RateLimitError extends Error {
+  retryAfter: number;
+
+  constructor(message: string, retryAfter: number) {
+    super(message);
+    this.retryAfter = retryAfter;
+  }
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error("The chat request failed.");
 }
@@ -152,6 +163,9 @@ export function useChatSocket(onAuthError?: () => void): {
               if (!pending) return; // a late reply for a chat that is no longer waiting
 
               if (typeof value.error === "string") {
+                if (typeof value.retry_after === "number") {
+                  throw new RateLimitError(value.error, value.retry_after);
+                }
                 throw new Error(value.error);
               }
 

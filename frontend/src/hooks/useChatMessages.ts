@@ -1,60 +1,143 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessage } from "../types";
-import { safeGetJson, safeRemove, safeSetJson } from "../services/storage";
-import { getIdentity } from "../services/identity";
+import type { ChatMessage, ServerMessage } from "../types";
+import { UnauthorizedError, getMessages } from "../api";
 
-function messagesKey(conversationId: string): string {
-  const userId = getIdentity()?.userId ?? "default";
+export type HistoryStatus = "loading" | "ready" | "error";
 
-  // The first chat keeps the old key, so existing history is not lost
-  return conversationId === userId
-    ? "day2.messages." + userId
-    : "day2.messages." + userId + "." + conversationId;
+interface ChatState {
+  messages: ChatMessage[];
+  nextCursor: string | null; // leads to OLDER messages; null = nothing older
+  status: HistoryStatus;
+  loadingEarlier: boolean;
 }
 
-function readMessages(conversationId: string): ChatMessage[] {
-  const saved = safeGetJson<ChatMessage[]>(messagesKey(conversationId));
-  return Array.isArray(saved) ? saved : [];
-}
+const EMPTY_CHAT: ChatState = {
+  messages: [],
+  nextCursor: null,
+  status: "ready",
+  loadingEarlier: false,
+};
 
 const NO_MESSAGES: ChatMessage[] = [];
 
-// Keeps the messages of every chat that has been opened, so a chat that is
-// still answering in the background keeps filling in while another is open.
-export function useChatMessages(selectedId: string) {
-  const [byChat, setByChat] = useState<Record<string, ChatMessage[]>>(() => ({
-    [selectedId]: readMessages(selectedId),
-  }));
+function fromServer(item: ServerMessage): ChatMessage {
+  return {
+    id: item.id,
+    role: item.role,
+    content: item.content,
+    createdAt: item.created_at,
+    status: item.role === "user" ? "sent" : undefined,
+  };
+}
 
-  const dirtyRef = useRef<Set<string>>(new Set());
+// Put a page of older messages in front of what is already shown
+function addOlder(current: ChatMessage[], older: ServerMessage[]): ChatMessage[] {
+  const known = new Set(current.map((message) => message.id));
+
+  return [
+    ...older.map(fromServer).filter((message) => !known.has(message.id)),
+    ...current,
+  ];
+}
+
+// The server is the source of truth. A chat's latest page loads when it is
+// first opened; older pages load on demand. Chats that are still answering in
+// the background keep filling in while another chat is open.
+//
+// isLocal = a brand-new chat the server has never seen: nothing to load.
+export function useChatMessages(
+  selectedId: string,
+  isLocal: boolean,
+  onAuthError?: () => void,
+) {
+  const [chats, setChats] = useState<Record<string, ChatState>>({});
+
+  const requestedRef = useRef<Set<string>>(new Set());
   const deletedRef = useRef<Set<string>>(new Set());
+  const onAuthErrorRef = useRef(onAuthError);
 
-  // Opening a chat for the first time: load it from storage
-  if (!(selectedId in byChat)) {
-    setByChat((current) => ({ ...current, [selectedId]: readMessages(selectedId) }));
-  }
-
-  // Save only the chats that changed
   useEffect(() => {
-    for (const id of dirtyRef.current) {
-      if (byChat[id]) safeSetJson(messagesKey(id), byChat[id]);
-    }
+    onAuthErrorRef.current = onAuthError;
+  }, [onAuthError]);
 
-    dirtyRef.current.clear();
-  }, [byChat]);
+  const patch = useCallback(
+    (id: string, update: (chat: ChatState) => ChatState) => {
+      setChats((current) => ({ ...current, [id]: update(current[id] ?? EMPTY_CHAT) }));
+    },
+    [],
+  );
+
+  const loadLatest = useCallback(
+    (id: string) => {
+      getMessages(id)
+        .then((page) => {
+          if (deletedRef.current.has(id)) return;
+
+          patch(id, (chat) => ({
+            ...chat,
+            status: "ready",
+            nextCursor: page.next_cursor,
+            messages: addOlder(chat.messages, page.items),
+          }));
+        })
+        .catch((error: unknown) => {
+          if (deletedRef.current.has(id)) return;
+          if (error instanceof UnauthorizedError) onAuthErrorRef.current?.();
+
+          patch(id, (chat) => ({ ...chat, status: "error" }));
+        });
+    },
+    [patch],
+  );
+
+  // First time a chat is opened: load its latest page
+  useEffect(() => {
+    if (requestedRef.current.has(selectedId)) return;
+
+    requestedRef.current.add(selectedId);
+
+    if (!isLocal) loadLatest(selectedId);
+  }, [isLocal, loadLatest, selectedId]);
+
+  const retryLoad = useCallback(() => {
+    patch(selectedId, (chat) => ({ ...chat, status: "loading" }));
+    loadLatest(selectedId);
+  }, [loadLatest, patch, selectedId]);
+
+  // "Load earlier messages"
+  const loadEarlier = useCallback(async () => {
+    const id = selectedId;
+    const chat = chats[id];
+
+    if (!chat?.nextCursor || chat.loadingEarlier) return;
+
+    patch(id, (current) => ({ ...current, loadingEarlier: true }));
+
+    try {
+      const page = await getMessages(id, chat.nextCursor);
+
+      if (deletedRef.current.has(id)) return;
+
+      patch(id, (current) => ({
+        ...current,
+        loadingEarlier: false,
+        nextCursor: page.next_cursor,
+        messages: addOlder(current.messages, page.items),
+      }));
+    } catch (error) {
+      if (error instanceof UnauthorizedError) onAuthErrorRef.current?.();
+
+      patch(id, (current) => ({ ...current, loadingEarlier: false }));
+    }
+  }, [chats, patch, selectedId]);
 
   const change = useCallback(
     (id: string, update: (messages: ChatMessage[]) => ChatMessage[]) => {
       if (deletedRef.current.has(id)) return; // a reply for a deleted chat
 
-      dirtyRef.current.add(id);
-
-      setByChat((current) => ({
-        ...current,
-        [id]: update(current[id] ?? readMessages(id)),
-      }));
+      patch(id, (chat) => ({ ...chat, messages: update(chat.messages) }));
     },
-    [],
+    [patch],
   );
 
   const addMessage = useCallback(
@@ -82,21 +165,26 @@ export function useChatMessages(selectedId: string) {
 
   const removeChat = useCallback((id: string) => {
     deletedRef.current.add(id);
-    dirtyRef.current.delete(id);
-    safeRemove(messagesKey(id));
 
-    setByChat((current) => {
+    setChats((current) => {
       const next = { ...current };
       delete next[id];
       return next;
     });
   }, []);
 
+  const chat = chats[selectedId];
+
   return {
-    messages: byChat[selectedId] ?? NO_MESSAGES,
+    messages: chat?.messages ?? NO_MESSAGES,
+    historyStatus: chat?.status ?? (isLocal ? "ready" : "loading"),
+    hasEarlier: chat?.nextCursor != null,
+    loadingEarlier: chat?.loadingEarlier ?? false,
+    loadEarlier,
+    retryLoad,
     addMessage,
     updateMessage,
     removeMessage,
     removeChat,
-  };
+  } as const;
 }

@@ -32,6 +32,28 @@ export interface Conversation {
   title: string;
   createdAt: string;
   updatedAt: string;
+  // Created in this browser, but the server has not seen a message for it yet
+  isLocal?: boolean;
+}
+
+// ---- Paginated REST responses (backend/orchestrator/history.py) ----
+export interface Page<T> {
+  items: T[];
+  next_cursor: string | null; // null on the last page
+}
+
+export interface ServerConversation {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServerMessage {
+  id: string;
+  role: MessageRole;
+  content: string;
+  created_at: string;
 }
 
 export interface ChatRequest {
