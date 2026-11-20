@@ -1,4 +1,3 @@
-
 from qdrant_client import models
 
 from embeddings import embed_query
@@ -8,9 +7,14 @@ from qdrant_store import client, COLLECTION_NAME
 def retrieve_messages(
     query: str,
     user_id: str,
+    conversation_id: str,
     limit: int = 5,
 ) -> list[dict]:
-    """Retrieve relevant past chat messages using hybrid search."""
+    """Retrieve relevant messages of ONE chat of ONE user (hybrid search)."""
+
+    # Without both ids the filter would be too wide: refuse instead of leaking
+    if not user_id or not conversation_id:
+        raise ValueError("user_id and conversation_id are required")
 
     vectors = embed_query(query)
 
@@ -21,13 +25,17 @@ def retrieve_messages(
         values=vectors["sparse"]["values"],
     )
 
-    # Restrict retrieval to the authenticated user's messages
+    # Restrict retrieval to this user's messages in this one chat
     query_filter = models.Filter(
         must=[
             models.FieldCondition(
                 key="user_id",
                 match=models.MatchValue(value=user_id),
-            )
+            ),
+            models.FieldCondition(
+                key="conversation_id",
+                match=models.MatchValue(value=conversation_id),
+            ),
         ]
     )
 
