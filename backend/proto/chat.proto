@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package chat.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Runs one chat turn end to end: search, save, ask the LLM, save the answer.
+service ChatService {
+    rpc Chat (ChatRequest) returns (stream ChatEvent);
+}
+
+// Reads what is stored: the sidebar list and a chat's messages.
+service HistoryService {
+    rpc ListConversations (ListConversationsRequest) returns (ListConversationsResponse);
+    rpc ListMessages (ListMessagesRequest) returns (ListMessagesResponse);
+}
+
+enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_USER = 1;
+    ROLE_ASSISTANT = 2;
+}
+
+// ---------- Chat ----------
+
+message ChatRequest {
+    string user_id = 1;
+    string conversation_id = 2;
+    string query = 3;
+}
+
+message ChatEvent {
+    oneof event {
+        Context context = 1;   // sent once, after retrieval, before the first token
+        Token token = 2;       // many
+        Done done = 3;         // sent once, last
+    }
+}
+
+message Context {
+    repeated RetrievedMessage messages = 1;
+}
+
+message RetrievedMessage {
+    string id = 1;
+    float similarity = 2;
+    Role role = 3;
+    string content = 4;
+    google.protobuf.Timestamp created_at = 5;
+}
+
+message Token {
+    string text = 1;
+}
+
+message Done {
+    string user_message_id = 1;
+    string assistant_message_id = 2;
+    string answer = 3;          // the full text that was saved
+}
+
+// ---------- History ----------
+
+message ListConversationsRequest {
+    string user_id = 1;
+    int32 page_size = 2;
+    string page_token = 3;
+}
+
+message Conversation {
+    string id = 1;
+    string title = 2;
+    google.protobuf.Timestamp created_at = 3;
+    google.protobuf.Timestamp updated_at = 4;
+}
+
+message ListConversationsResponse {
+    repeated Conversation conversations = 1;
+    string next_page_token = 2;   // empty = last page
+}
+
+message ListMessagesRequest {
+    string user_id = 1;
+    string conversation_id = 2;
+    int32 page_size = 3;
+    string page_token = 4;
+}
+
+message Message {
+    string id = 1;
+    Role role = 2;
+    string content = 3;
+    google.protobuf.Timestamp created_at = 4;
+}
+
+message ListMessagesResponse {
+    repeated Message messages = 1;
+    string next_page_token = 2;
+}
