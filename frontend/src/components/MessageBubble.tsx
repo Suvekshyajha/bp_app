@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "../types";
 import { ContextPanel } from "./ContextPanel";
@@ -83,6 +83,24 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// Model output is untrusted. The browser loads an image on its own, with no
+// click, so an image address can carry private text out. Images are never
+// rendered, and a link is shown as plain text plus its real address, so the
+// user sees where it goes and nothing is loaded or clickable.
+const SAFE_MARKDOWN_COMPONENTS: Components = {
+  img: ({ alt }) => <span>{alt ? `[image: ${alt}]` : "[image removed]"}</span>,
+  a: ({ href, children }) => {
+    // A bare URL (autolinked by remark-gfm) already shows its own address
+    const showsAddress = typeof children === "string" && children === href;
+    return (
+      <span>
+        {children}
+        {href && !showsAddress ? ` (${href})` : ""}
+      </span>
+    );
+  },
+};
+
 export function MessageBubble({
   message,
   onRetry,
@@ -163,7 +181,11 @@ export function MessageBubble({
             {isUser ? (
               <p className="plain-message">{message.content}</p>
             ) : (
-              <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
+              <div className="markdown-content">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={SAFE_MARKDOWN_COMPONENTS}>
+                  {message.content}
+                </ReactMarkdown>
+              </div>
             )}
             <div className="message-meta">
               <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
