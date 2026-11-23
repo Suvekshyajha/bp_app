@@ -16,6 +16,7 @@ from crypto import check_configured
 from database import Base, engine, migrate_schema
 from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
+from service_auth import require_service_token
 from turn import Context, Done, Token, run_turn
 
 
@@ -39,6 +40,8 @@ TLS_CLIENT_CA = os.getenv("CHAT_TLS_CLIENT_CA")
 # user_id it is given, so only callers that know this secret may talk to it.
 SERVICE_TOKEN = os.getenv("CHAT_SERVICE_TOKEN") or None
 
+# Development only: start without a token (allowed only on this machine)
+ALLOW_NO_AUTH = os.getenv("CHAT_ALLOW_NO_AUTH", "").lower() == "true"
 
 # ---------- Converting between our data and protobuf ----------
 
@@ -349,6 +352,9 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
 # ---------- Start up ----------
 
 async def serve():
+    # Refuse to start without a service token (before doing anything else)
+    token = require_service_token(SERVICE_TOKEN, ALLOW_NO_AUTH, BIND_HOST)
+
     # Stop right away if the encryption key is missing, not on the first message
     check_configured()
 
@@ -358,14 +364,11 @@ async def serve():
     migrate_schema()
     await asyncio.to_thread(create_collection)
 
-    if SERVICE_TOKEN:
-        server = grpc.aio.server(interceptors=[ServiceTokenInterceptor(SERVICE_TOKEN)])
+    if token:
+        server = grpc.aio.server(interceptors=[ServiceTokenInterceptor(token)])
     else:
-        server = grpc.aio.server()
-        logger.warning(
-            "CHAT_SERVICE_TOKEN is not set: any caller that can reach this "
-            "port can read or delete any user's chats."
-        )
+        server = grpc.aio.server()  # CHAT_ALLOW_NO_AUTH, local development
+
 
     chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatServicer(), server)
     chat_pb2_grpc.add_HistoryServiceServicer_to_server(HistoryServicer(), server)
