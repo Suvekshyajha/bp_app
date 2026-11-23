@@ -13,6 +13,7 @@ service ChatService {
 service HistoryService {
     rpc ListConversations (ListConversationsRequest) returns (ListConversationsResponse);
     rpc ListMessages (ListMessagesRequest) returns (ListMessagesResponse);
+    rpc DeleteConversation (DeleteConversationRequest) returns (DeleteConversationResponse);
 }
 
 enum Role {
@@ -27,6 +28,12 @@ message ChatRequest {
     string user_id = 1;
     string conversation_id = 2;
     string query = 3;
+
+    // NEW. The id the saved question should get (a UUID made by the browser).
+    // If this message already exists in the chat, it and EVERYTHING AFTER IT
+    // are deleted first. That is how edit, regenerate and retry work.
+    // Empty = the service makes its own id (old behaviour).
+    string user_message_id = 4;
 }
 
 message ChatEvent {
@@ -91,9 +98,17 @@ message Message {
     Role role = 2;
     string content = 3;
     google.protobuf.Timestamp created_at = 4;
+    repeated RetrievedMessage context = 5;
 }
 
 message ListMessagesResponse {
     repeated Message messages = 1;
     string next_page_token = 2;
 }
+
+message DeleteConversationRequest {
+    string user_id = 1;
+    string conversation_id = 2;
+}
+
+message DeleteConversationResponse {}

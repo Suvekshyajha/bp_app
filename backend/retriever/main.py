@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import logging
 import os
+import uuid  
 from datetime import datetime, timezone
 
 import grpc
@@ -180,11 +181,26 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 "user_id, conversation_id and query are required",
             )
 
+        # NEW: the id the browser chose for this question (a UUID).
+        # If the chat already has it, run_turn deletes it and everything
+        # after it first (edit / regenerate / retry).
+        extra = {}
+
+        if request.user_message_id:
+            try:
+                extra["user_message_id"] = str(uuid.UUID(request.user_message_id))
+            except ValueError:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "user_message_id must be a UUID",
+                )
+
         try:
             async for event in run_turn(
                 request.user_id,
                 request.conversation_id,
                 request.query.strip(),
+                **extra,  # NEW
             ):
                 if isinstance(event, Context):
                     yield chat_pb2.ChatEvent(

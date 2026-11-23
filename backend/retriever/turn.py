@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import repository
 from llm import stream_response
-from qdrant_store import store_message
+from qdrant_store import delete_message_points, store_message
 from repository import ConversationNotFound
 from retrieval import retrieve_messages
 
@@ -182,8 +182,38 @@ async def _save_answer(
 
 # ---------- The turn ----------
 
-async def run_turn(user_id: str, conversation_id: str, query: str):
-    """Yield Context, then Token (many), then Done. Raise on failure."""
+async def _cut_from(user_id: str, conversation_id: str, message_id: str) -> None:
+    """Delete one message and everything after it (SQLite and the search index).
+
+    Used by edit, regenerate and retry. If the message is not in this chat
+    (a brand-new question) there is nothing to delete.
+    """
+
+    ids = await asyncio.to_thread(
+        repository.message_ids_from, user_id, conversation_id, message_id
+    )
+
+    if not ids:
+        return
+
+    # Search index first, like delete_conversation: if it fails nothing is
+    # deleted and the same request can simply be sent again.
+    await asyncio.to_thread(delete_message_points, ids)
+    await asyncio.to_thread(repository.delete_messages, conversation_id, ids)
+
+
+async def run_turn(
+    user_id: str,
+    conversation_id: str,
+    query: str,
+    user_message_id: str | None = None,
+):
+    """Yield Context, then Token (many), then Done. Raise on failure.
+
+    If `user_message_id` is already in this chat, that message and everything
+    after it are deleted first, and the question is saved again under the
+    same id. (Edit, regenerate and retry all work this way.)
+    """
 
     # 1. The chat must exist and belong to this user
     allowed = await asyncio.to_thread(
@@ -195,6 +225,12 @@ async def run_turn(user_id: str, conversation_id: str, query: str):
 
     if not allowed:
         raise ConversationNotFound(conversation_id)
+
+    # 1b. Edit / regenerate / retry: remove the old question and everything
+    #     after it BEFORE the history is read, so the old answer is not
+    #     sent to the model again.
+    if user_message_id:
+        await _cut_from(user_id, conversation_id, user_message_id)
 
     # 2. What was said earlier in THIS chat (read before the new question
     #    is saved, so the question is not sent twice)
@@ -216,8 +252,9 @@ async def run_turn(user_id: str, conversation_id: str, query: str):
 
     # 4. Save the question, then index it in the background (after
     #    retrieval, so the question cannot retrieve itself)
+    extra = {"message_id": user_message_id} if user_message_id else {}
     user_message_id = await asyncio.to_thread(
-        repository.add_message, conversation_id, "user", query
+        repository.add_message, conversation_id, "user", query, **extra
     )
     _spawn(_index(user_id, conversation_id, "user", query, user_message_id))
 

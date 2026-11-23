@@ -121,7 +121,19 @@ def store_message(
 
     return message_id
 
+def delete_message_points(message_ids: list[str]) -> None:
+    """Remove these messages from the search index. Safe to run twice, and
+    ids that were never indexed are simply ignored."""
 
+    if not message_ids:
+        return
+
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=models.PointIdsList(points=message_ids),
+        wait=True,
+    )
+    
 def delete_conversation_points(user_id: str, conversation_id: str) -> None:
     """Remove every indexed message of one chat. Safe to run twice."""
 

@@ -119,11 +119,15 @@ def add_message(
     role: str,
     content: str,
     context: list[dict] | None = None,
+    message_id: str | None = None,
 ) -> str:
     """Save a message. `context` is the list of related past messages an
-    answer was written with, kept so the chat can show them again later."""
+    answer was written with, kept so the chat can show them again later.
 
-    message_id = str(uuid.uuid4())
+    `message_id` lets the caller choose the id (the browser does this for the
+    questions it sends, so both sides know the same id)."""
+
+    message_id = message_id or str(uuid.uuid4())
 
     with SessionLocal() as db:
         db.add(Message(
@@ -137,7 +141,69 @@ def add_message(
 
     return message_id
 
+def message_ids_from(
+    user_id: str,
+    conversation_id: str,
+    message_id: str,
+) -> list[str]:
+    """The ids of this message and every message after it in the chat.
 
+    Returns [] if the message is not in this chat (nothing to delete).
+    Raises ConversationNotFound if the chat is not this user's.
+    """
+
+    with SessionLocal() as db:
+        owned = (
+            db.query(Conversation.id)
+            .filter(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+            .first()
+        )
+
+        if not owned:
+            raise ConversationNotFound(conversation_id)
+
+        target = (
+            db.query(Message)
+            .filter(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+            .first()
+        )
+
+        if target is None:
+            return []
+
+        rows = (
+            db.query(Message.id)
+            .filter(
+                Message.conversation_id == conversation_id,
+                tuple_(Message.created_at, Message.id)
+                >= tuple_(target.created_at, target.id),
+            )
+            .all()
+        )
+
+        return [row.id for row in rows]
+
+
+def delete_messages(conversation_id: str, message_ids: list[str]) -> None:
+    """Delete these messages of one chat. (The search index is cleaned
+    separately, see qdrant_store.)"""
+
+    if not message_ids:
+        return
+
+    with SessionLocal() as db:
+        db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.id.in_(message_ids),
+        ).delete(synchronize_session=False)
+        db.commit()
+        
 def conversation_exists(conversation_id: str) -> bool:
     with SessionLocal() as db:
         return db.get(Conversation, conversation_id) is not None
