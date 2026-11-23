@@ -85,6 +85,13 @@ async def fake_list_messages(user_id, conversation_id, limit, cursor):
     return service.messages
 
 
+async def fake_delete_conversation(user_id, conversation_id):
+    service.calls.append(("delete_conversation", user_id, conversation_id))
+
+    if service.history_error:
+        raise service.history_error
+
+
 async def fake_close():
     return None
 
@@ -93,6 +100,7 @@ fake_chat_client.ChatServiceError = ChatServiceError
 fake_chat_client.chat = fake_chat
 fake_chat_client.list_conversations = fake_list_conversations
 fake_chat_client.list_messages = fake_list_messages
+fake_chat_client.delete_conversation = fake_delete_conversation
 fake_chat_client.close = fake_close
 sys.modules["chat_client"] = fake_chat_client
 

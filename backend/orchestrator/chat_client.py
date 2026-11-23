@@ -27,6 +27,18 @@ CHAT_SERVICE_ADDRESS = os.getenv(
     os.getenv("RETRIEVER_ADDRESS", "localhost:50051"),
 )
 
+# Shared secret the chat service requires on every call (CHAT_SERVICE_TOKEN
+# there too). The service trusts the user_id we send, so this is what stops
+# other programs on the network from asking for someone else's chats.
+CHAT_SERVICE_TOKEN = os.getenv("CHAT_SERVICE_TOKEN") or None
+
+# TLS. Set CHAT_TLS_CA to the certificate (file path) that signed the chat
+# service's certificate and the connection is encrypted. For mutual TLS also
+# set CHAT_TLS_CLIENT_CERT and CHAT_TLS_CLIENT_KEY.
+CHAT_TLS_CA = os.getenv("CHAT_TLS_CA")
+CHAT_TLS_CLIENT_CERT = os.getenv("CHAT_TLS_CLIENT_CERT")
+CHAT_TLS_CLIENT_KEY = os.getenv("CHAT_TLS_CLIENT_KEY")
+
 # A whole answer may take a while; history calls should be quick
 CHAT_TIMEOUT_SECONDS = 120
 HISTORY_TIMEOUT_SECONDS = 10
@@ -46,13 +58,47 @@ _chat_stub: chat_pb2_grpc.ChatServiceStub | None = None
 _history_stub: chat_pb2_grpc.HistoryServiceStub | None = None
 
 
+def _read(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _make_channel() -> grpc.aio.Channel:
+    if CHAT_TLS_CA:
+        client_cert = CHAT_TLS_CLIENT_CERT and CHAT_TLS_CLIENT_KEY
+
+        credentials = grpc.ssl_channel_credentials(
+            root_certificates=_read(CHAT_TLS_CA),
+            private_key=_read(CHAT_TLS_CLIENT_KEY) if client_cert else None,
+            certificate_chain=_read(CHAT_TLS_CLIENT_CERT) if client_cert else None,
+        )
+
+        return grpc.aio.secure_channel(CHAT_SERVICE_ADDRESS, credentials)
+
+    logger.warning(
+        "Talking to the chat service WITHOUT TLS (CHAT_TLS_CA is not set). "
+        "Only do this on a private network."
+    )
+
+    return grpc.aio.insecure_channel(CHAT_SERVICE_ADDRESS)
+
+
+def _metadata() -> tuple:
+    """Sent with every call."""
+
+    if CHAT_SERVICE_TOKEN:
+        return (("authorization", f"Bearer {CHAT_SERVICE_TOKEN}"),)
+
+    return ()
+
+
 def _stubs():
     """Create the channel on first use (it needs a running event loop)."""
 
     global _channel, _chat_stub, _history_stub
 
     if _channel is None:
-        _channel = grpc.aio.insecure_channel(CHAT_SERVICE_ADDRESS)
+        _channel = _make_channel()
         _chat_stub = chat_pb2_grpc.ChatServiceStub(_channel)
         _history_stub = chat_pb2_grpc.HistoryServiceStub(_channel)
 
@@ -111,6 +157,7 @@ async def chat(
             query=query,
         ),
         timeout=CHAT_TIMEOUT_SECONDS,
+        metadata=_metadata(),
     )
 
     try:
@@ -156,6 +203,7 @@ async def list_conversations(
                 page_token=cursor or "",
             ),
             timeout=HISTORY_TIMEOUT_SECONDS,
+            metadata=_metadata(),
         )
     except grpc.aio.AioRpcError as error:
         raise ChatServiceError(error.code(), error.details() or "") from error
@@ -191,6 +239,7 @@ async def list_messages(
                 page_token=cursor or "",
             ),
             timeout=HISTORY_TIMEOUT_SECONDS,
+            metadata=_metadata(),
         )
     except grpc.aio.AioRpcError as error:
         raise ChatServiceError(error.code(), error.details() or "") from error
@@ -202,11 +251,33 @@ async def list_messages(
                 "role": _role_name(message.role),
                 "content": message.content,
                 "created_at": _iso(message.created_at),
+                # The related past messages the answer was written with,
+                # in the same shape the live "done" message uses
+                "results": [_result_for_frontend(m) for m in message.context],
             }
             for message in response.messages
         ],
         "next_cursor": response.next_page_token or None,
     }
+
+
+async def delete_conversation(user_id: str, conversation_id: str) -> None:
+    """Delete a chat for good. Raises ChatServiceError (NOT_FOUND if the chat
+    does not exist or is not this user's)."""
+
+    _, history_stub = _stubs()
+
+    try:
+        await history_stub.DeleteConversation(
+            chat_pb2.DeleteConversationRequest(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            ),
+            timeout=HISTORY_TIMEOUT_SECONDS,
+            metadata=_metadata(),
+        )
+    except grpc.aio.AioRpcError as error:
+        raise ChatServiceError(error.code(), error.details() or "") from error
 
 
 async def close() -> None:

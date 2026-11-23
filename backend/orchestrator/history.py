@@ -4,8 +4,10 @@ The data lives in the chat service now. These endpoints check who is asking
 (the session cookie) and pass the question on over gRPC.
 """
 
+import re
+
 import grpc
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 import chat_client
 from auth import get_current_user
@@ -14,6 +16,9 @@ from models import User
 
 
 router = APIRouter(tags=["history"])
+
+# Same rule the WebSocket applies to conversation ids
+CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 CONVERSATIONS_PAGE_SIZE = 20
 MESSAGES_PAGE_SIZE = 30
@@ -68,3 +73,25 @@ async def list_messages(
         return await chat_client.list_messages(user.id, conversation_id, limit, cursor)
     except ChatServiceError as error:
         raise to_http_error(error)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Delete a chat for good: its messages, its saved context and its
+    entries in the search index. Other browsers stop seeing it too.
+
+    404 if the chat does not exist or belongs to someone else.
+    """
+
+    if not CONVERSATION_ID_PATTERN.match(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    try:
+        await chat_client.delete_conversation(user.id, conversation_id)
+    except ChatServiceError as error:
+        raise to_http_error(error)
+
+    return Response(status_code=204)
