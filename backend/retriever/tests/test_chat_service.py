@@ -11,6 +11,7 @@ import grpc
 import pytest
 import pytest_asyncio
 
+from backend.retriever.qdrant_store import delete_message_points
 import chat_pb2
 import chat_pb2_grpc
 
@@ -42,8 +43,13 @@ def _fake_modules():
         ]:
             del indexed[key]
 
+    def delete_message_points(message_ids):
+        for message_id in message_ids:
+            indexed.pop(message_id, None)
+
     store.store_message = store_message
     store.delete_conversation_points = delete_points
+    store.delete_message_points = delete_message_points
 
     retrieval = types.ModuleType("retrieval")
     retrieval.retrieve_messages = lambda **kwargs: list(retrieved)
