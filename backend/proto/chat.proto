@@ -29,11 +29,14 @@ message ChatRequest {
     string conversation_id = 2;
     string query = 3;
 
-    // NEW. The id the saved question should get (a UUID made by the browser).
-    // If this message already exists in the chat, it and EVERYTHING AFTER IT
-    // are deleted first. That is how edit, regenerate and retry work.
-    // Empty = the service makes its own id (old behaviour).
+    // The idempotency key: a UUID the browser chooses for this question.
+    // Sending the same id (and text) again returns the saved answer instead
+    // of asking the model again. Empty = a plain new question.
     string user_message_id = 4;
+
+    // true = the user asked for a NEW answer to this same question.
+    // Only meaningful together with user_message_id.
+    bool regenerate = 5;
 }
 
 message ChatEvent {
@@ -98,7 +101,7 @@ message Message {
     Role role = 2;
     string content = 3;
     google.protobuf.Timestamp created_at = 4;
-    repeated RetrievedMessage context = 5;
+    repeated RetrievedMessage context = 5;   // the related messages an answer used
 }
 
 message ListMessagesResponse {
