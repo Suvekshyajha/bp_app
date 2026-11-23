@@ -1,181 +1,218 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 import grpc
-from google.protobuf.json_format import ParseDict
+import groq
+from google.protobuf.timestamp_pb2 import Timestamp
 
-import retriever_pb2
-import retriever_pb2_grpc
+import chat_pb2
+import chat_pb2_grpc
 
-from retrieval import retrieve_messages
-from qdrant_store import create_collection, store_message
+import repository
+from database import Base, engine
+from qdrant_store import create_collection
+from repository import ConversationNotFound, InvalidCursor
+from turn import Context, Done, Token, run_turn
 
 
 logger = logging.getLogger(__name__)
 
-# Embedding is CPU-heavy: never run more than this many at the same time
-MAX_CONCURRENT_JOBS = 4
-_jobs = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
-
-_DONE = object()
+PORT = 50051
 
 
-async def serve_stream(request_iterator, handle):
-    """Run a bidirectional stream.
+# ---------- Converting between our data and protobuf ----------
 
-    Reads requests as they arrive and handles each one in its own task, so a
-    slow request does not hold up the ones behind it. Whatever `handle(request)`
-    yields is sent back right away. Ends when the client closes its side and
-    every request has been answered.
-    """
-    outbox: asyncio.Queue = asyncio.Queue()
-    in_flight: set[asyncio.Task] = set()
+ROLES = {
+    "user": chat_pb2.ROLE_USER,
+    "assistant": chat_pb2.ROLE_ASSISTANT,
+}
 
-    async def run_one(request):
-        async for response in handle(request):
-            await outbox.put(response)
 
-    async def read_requests():
+def to_timestamp(value: datetime | str | None) -> Timestamp:
+    """SQLite gives UTC times without a label; Qdrant payloads hold ISO text."""
+
+    stamp = Timestamp()
+
+    if isinstance(value, str):
         try:
-            async for request in request_iterator:
-                task = asyncio.create_task(run_one(request))
-                in_flight.add(task)
-                task.add_done_callback(in_flight.discard)
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return stamp
 
-            # Client finished sending: wait for the answers still being made
-            await asyncio.gather(*list(in_flight))
-        finally:
-            await outbox.put(_DONE)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
 
-    reader = asyncio.create_task(read_requests())
+        stamp.FromDatetime(value)
 
-    try:
-        while True:
-            item = await outbox.get()
-            if item is _DONE:
-                break
-            yield item
-    finally:
-        # Client went away (or we are done): stop everything still running
-        reader.cancel()
-        for task in list(in_flight):
-            task.cancel()
-        await asyncio.gather(reader, *list(in_flight), return_exceptions=True)
+    return stamp
 
 
-class RetrieverService(retriever_pb2_grpc.RetrieverServiceServicer):
+def to_retrieved_message(item: dict) -> chat_pb2.RetrievedMessage:
+    payload = item.get("payload") or {}
 
-    async def RetrieveData(self, request_iterator, context):
-        async for response in serve_stream(request_iterator, self._retrieve_one):
-            yield response
+    return chat_pb2.RetrievedMessage(
+        id=item["id"],
+        similarity=item["score"],
+        role=ROLES.get(payload.get("role"), chat_pb2.ROLE_UNSPECIFIED),
+        content=payload.get("content", ""),
+        created_at=to_timestamp(payload.get("timestamp")),
+    )
 
-    async def StoreMessage(self, request_iterator, context):
-        async for response in serve_stream(request_iterator, self._store_one):
-            yield response
 
-    # One request in, several chunks out. A bad request gets an error on its
-    # final message; it does not close the stream for everyone else.
-    async def _retrieve_one(self, request):
-        request_id = request.request_id
+# ---------- Chat ----------
 
+class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
+
+    async def Chat(self, request, context):
         if (
             not request.user_id
             or not request.conversation_id
             or not request.query.strip()
         ):
-            yield retriever_pb2.RetrievedChunk(
-                request_id=request_id,
-                last=True,
-                error="user_id, conversation_id and query are required",
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "user_id, conversation_id and query are required",
             )
-            return
 
         try:
-            async with _jobs:
-                results = await asyncio.to_thread(
-                    retrieve_messages,
-                    query=request.query,
-                    user_id=request.user_id,
-                    conversation_id=request.conversation_id,
-                    limit=request.limit or 5,
-                )
+            async for event in run_turn(
+                request.user_id,
+                request.conversation_id,
+                request.query.strip(),
+            ):
+                if isinstance(event, Context):
+                    yield chat_pb2.ChatEvent(
+                        context=chat_pb2.Context(
+                            messages=[to_retrieved_message(r) for r in event.results]
+                        )
+                    )
 
-            # Best match first, each chunk sent as soon as it is built
-            for result in results:
-                chunk = retriever_pb2.RetrievedChunk(
-                    id=result["id"],
-                    score=result["score"],
-                    request_id=request_id,
-                )
+                elif isinstance(event, Token):
+                    yield chat_pb2.ChatEvent(
+                        token=chat_pb2.Token(text=event.text)
+                    )
 
-                if result["payload"]:
-                    ParseDict(result["payload"], chunk.payload)
+                elif isinstance(event, Done):
+                    yield chat_pb2.ChatEvent(
+                        done=chat_pb2.Done(
+                            user_message_id=event.user_message_id,
+                            assistant_message_id=event.assistant_message_id,
+                            answer=event.answer,
+                        )
+                    )
 
-                yield chunk
+        except ConversationNotFound:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
-            yield retriever_pb2.RetrievedChunk(request_id=request_id, last=True)
-
-        except Exception as error:
-            logger.exception("RetrieveData failed")
-            yield retriever_pb2.RetrievedChunk(
-                request_id=request_id,
-                last=True,
-                error=str(error),
+        except groq.RateLimitError:
+            await context.abort(
+                grpc.StatusCode.RESOURCE_EXHAUSTED,
+                "The language model is busy. Try again shortly.",
             )
 
-    async def _store_one(self, request):
-        request_id = request.request_id
-
-        if (
-            not request.user_id
-            or not request.conversation_id
-            or not request.content.strip()
-        ):
-            yield retriever_pb2.StoreMessageResponse(
-                request_id=request_id,
-                error="user_id, conversation_id and content are required",
+        except groq.APITimeoutError:
+            await context.abort(
+                grpc.StatusCode.DEADLINE_EXCEEDED,
+                "The language model took too long to answer.",
             )
-            return
+
+        except groq.APIConnectionError:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "Could not reach the language model.",
+            )
+
+        except Exception:
+            logger.exception("Chat turn failed")
+            await context.abort(grpc.StatusCode.INTERNAL, "Internal error.")
+
+
+# ---------- History ----------
+
+class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
+
+    async def ListConversations(self, request, context):
+        if not request.user_id:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
 
         try:
-            async with _jobs:
-                message_id = await asyncio.to_thread(
-                    store_message,
-                    user_id=request.user_id,
-                    conversation_id=request.conversation_id,
-                    role=request.role,
-                    content=request.content,
+            items, next_cursor = await asyncio.to_thread(
+                repository.list_conversations,
+                request.user_id,
+                request.page_size or 20,
+                request.page_token or None,
+            )
+
+        except InvalidCursor:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid cursor.")
+
+        return chat_pb2.ListConversationsResponse(
+            conversations=[
+                chat_pb2.Conversation(
+                    id=item["id"],
+                    title=item["title"],
+                    created_at=to_timestamp(item["created_at"]),
+                    updated_at=to_timestamp(item["updated_at"]),
                 )
+                for item in items
+            ],
+            next_page_token=next_cursor or "",
+        )
 
-            yield retriever_pb2.StoreMessageResponse(
-                request_id=request_id,
-                message_id=message_id,
+    async def ListMessages(self, request, context):
+        if not request.user_id or not request.conversation_id:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "user_id and conversation_id are required",
             )
 
-        except Exception as error:
-            logger.exception("StoreMessage failed")
-            yield retriever_pb2.StoreMessageResponse(
-                request_id=request_id,
-                error=str(error),
+        try:
+            items, next_cursor = await asyncio.to_thread(
+                repository.list_messages,
+                request.user_id,
+                request.conversation_id,
+                request.page_size or 30,
+                request.page_token or None,
             )
 
+        except ConversationNotFound:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
+
+        except InvalidCursor:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid cursor.")
+
+        return chat_pb2.ListMessagesResponse(
+            messages=[
+                chat_pb2.Message(
+                    id=item["id"],
+                    role=ROLES.get(item["role"], chat_pb2.ROLE_UNSPECIFIED),
+                    content=item["content"],
+                    created_at=to_timestamp(item["created_at"]),
+                )
+                for item in items
+            ],
+            next_page_token=next_cursor or "",
+        )
+
+
+# ---------- Start up ----------
 
 async def serve():
-    # Create Qdrant collection if it doesn't exist
+    # Create the SQLite tables and the Qdrant collection if they are missing
+    Base.metadata.create_all(bind=engine)
     await asyncio.to_thread(create_collection)
 
     server = grpc.aio.server()
 
-    retriever_pb2_grpc.add_RetrieverServiceServicer_to_server(
-        RetrieverService(),
-        server,
-    )
+    chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatServicer(), server)
+    chat_pb2_grpc.add_HistoryServiceServicer_to_server(HistoryServicer(), server)
 
-    server.add_insecure_port("[::]:50051")
-
+    server.add_insecure_port(f"[::]:{PORT}")
     await server.start()
 
-    print("Retriever gRPC server (bidirectional streaming) running on port 50051")
+    print(f"Chat service running on port {PORT}")
 
     try:
         await server.wait_for_termination()

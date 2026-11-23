@@ -4,15 +4,17 @@ import math
 import re
 import uuid
 
+import grpc
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from retriever_client import retrieve, store, RetrieverError
-from llm import stream_response
+import chat_client
+from chat_client import ChatServiceError
 from rate_limit import chat_limiter
 
 from database import SessionLocal, engine
-from models import User, Conversation, Message
+from models import User
 from auth import (
     ALLOWED_ORIGINS,
     SESSION_COOKIE_NAME,
@@ -33,85 +35,6 @@ WS_ORIGIN_BLOCKED = 4403   # request came from a website we do not allow
 CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 
-def get_or_create_conversation(
-    db: Session,
-    user_id: str,
-    conversation_id: str,
-    first_query: str,
-) -> Conversation | None:
-    """Return the user's conversation, creating it on first use.
-
-    Returns None if the id already belongs to another user.
-    """
-    conversation = db.query(Conversation).filter(
-        Conversation.id == conversation_id
-    ).first()
-
-    if conversation:
-        return conversation if conversation.user_id == user_id else None
-
-    conversation = Conversation(
-        id=conversation_id,
-        user_id=user_id,
-        title=" ".join(first_query.split())[:40],
-    )
-
-    db.add(conversation)
-    db.commit()
-
-    return conversation
-
-
-# Most messages of THIS chat read from the database for each question.
-# How many of them reach the model is decided in llm.py by the prompt budget.
-HISTORY_MAX_MESSAGES = 20
-
-# How many related older messages of this chat to add on top of the history
-RETRIEVAL_LIMIT = 5
-
-
-def load_chat_history(db: Session, conversation_id: str) -> list[dict]:
-    """The latest messages of one chat, oldest first, ready for the LLM.
-
-    Call it BEFORE the new question is saved, so the question is not
-    sent twice.
-    """
-    rows = (
-        db.query(Message)
-        .filter(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(HISTORY_MAX_MESSAGES)
-        .all()
-    )
-
-    # rows are newest first; the chat is read oldest first
-    return [
-        {"role": row.role, "content": row.content}
-        for row in reversed(rows)
-    ]
-
-
-def drop_messages_already_in_history(
-    results: list[dict],
-    history: list[dict],
-) -> list[dict]:
-    """Remove retrieved messages the model already gets as chat history.
-
-    Retrieval searches the same chat as the history, so the most similar
-    messages are often the recent ones. Sending them twice wastes context.
-    """
-    seen = {(turn["role"], turn["content"]) for turn in history}
-
-    return [
-        item
-        for item in results
-        if (
-            item.get("payload", {}).get("role"),
-            item.get("payload", {}).get("content"),
-        ) not in seen
-    ]
-
-
 # Most answers one browser connection may have in progress at once
 MAX_ACTIVE_TURNS = 3
 
@@ -128,6 +51,23 @@ class ChatTurn:
         return self.task is not None and not self.task.done()
 
 
+# What the browser is told when the chat service reports a problem
+SERVICE_ERROR_MESSAGES = {
+    grpc.StatusCode.NOT_FOUND: "Conversation not found.",
+    grpc.StatusCode.RESOURCE_EXHAUSTED: (
+        "The assistant is busy right now. Please try again in a moment."
+    ),
+    grpc.StatusCode.DEADLINE_EXCEEDED: (
+        "The assistant took too long to answer. Please try again."
+    ),
+    grpc.StatusCode.UNAVAILABLE: (
+        "The chat service is unavailable. Please try again shortly."
+    ),
+}
+
+GENERIC_ERROR = "Something went wrong. Please try again."
+
+
 async def answer_question(
     send,
     turn: ChatTurn,
@@ -135,144 +75,81 @@ async def answer_question(
     conversation_id: str,
     query: str,
 ) -> None:
-    """Retrieve context, stream the answer, save everything.
+    """Ask the chat service and pass what it says on to the browser.
+
+    The service does the real work: it searches, saves, calls the model and
+    saves the answer. This function only relays its events.
 
     Runs as its own task, so the connection keeps reading client messages
-    (like "cancel") while the answer is being written.
+    (like "cancel") while the answer is being written. Cancelling this task
+    cancels the gRPC call, and the service stops writing.
     """
 
-    store_user_task: asyncio.Task | None = None
+    results: list[dict] = []
+    parts: list[str] = []
+    final_answer: str | None = None
+    cancelled = False
 
-    # This task has its own DB session: the connection's session belongs to
-    # the receive loop.
-    with SessionLocal() as db:
-        try:
-            conversation = get_or_create_conversation(
-                db,
-                user_id,
-                conversation_id,
-                query,
-            )
+    events = chat_client.chat(user_id, conversation_id, query)
 
-            # What was said earlier in THIS chat (so follow-ups make sense).
-            # Read before the new question is saved below.
-            history = (
-                load_chat_history(db, conversation_id)
-                if conversation is not None
-                else []
-            )
+    try:
+        async for kind, value in events:
 
-            # Close the read transaction before the slow retriever/LLM calls.
-            db.rollback()
+            if kind == "context":
+                results = value
+                turn.streaming = True  # from here on, "cancel" is allowed
 
-            if conversation is None:
-                await send({"error": "Conversation not found.", "conversation_id": conversation_id})
-                return
-
-            # 6. Retrieve relevant past messages. They stream back over the
-            #    gRPC stream and are collected here (best match first).
-            #    Limited to this user AND this one chat, and only matches
-            #    above the relevance threshold come back (see retriever).
-            #    Ask for extra: the ones already in the history are removed.
-            results = await retrieve(
-                query,
-                user_id,
-                conversation_id,
-                RETRIEVAL_LIMIT + len(history),
-            )
-            results = drop_messages_already_in_history(results, history)
-            results = results[:RETRIEVAL_LIMIT]
-
-            # 7. Save the user message in SQLite
-            db.add(Message(
-                id=str(uuid.uuid4()),
-                conversation_id=conversation_id,
-                role="user",
-                content=query,
-            ))
-            db.commit()
-
-            # 8. Store it in Qdrant in the background while the LLM runs.
-            #    (After retrieval, so the question cannot retrieve itself.)
-            store_user_task = asyncio.create_task(
-                store(user_id, conversation_id, "user", query)
-            )
-
-            # 9. Stream the answer token by token
-            parts: list[str] = []
-            cancelled = False
-            tokens = stream_response(query, results, history)
-            turn.streaming = True
-
-            try:
-                async for token in tokens:
-                    parts.append(token)
-                    await send({
-                        "type": "token",
-                        "content": token,
-                        "conversation_id": conversation_id,
-                    })
-
-            except asyncio.CancelledError:
-                # The user pressed stop (or left). Keep what was written.
-                cancelled = True
-
-            finally:
-                turn.streaming = False
-                await tokens.aclose()
-
-            answer = "".join(parts)
-
-            # 10. Save the assistant response in SQLite
-            if answer:
-                db.add(Message(
-                    id=str(uuid.uuid4()),
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=answer,
-                ))
-                db.commit()
-
-            # 11. Store it in Qdrant. The answer is already saved and shown,
-            #     so a failure here is logged and not shown as a chat error.
-            try:
-                await store_user_task
-                if answer:
-                    await store(user_id, conversation_id, "assistant", answer)
-            except RetrieverError:
-                logger.exception("Could not store messages in the retriever")
-
-            # 12. Tell the frontend the answer is complete
-            await send({
-                "type": "done",
-                "query": query,
-                "answer": answer,
-                "conversation_id": conversation_id,
-                "results": results,
-                "cancelled": cancelled,
-            })
-
-        except asyncio.CancelledError:
-            # Connection closed before streaming started: nothing to send to
-            if store_user_task:
-                store_user_task.cancel()
-            raise
-
-        except Exception:
-            db.rollback()
-
-            if store_user_task:
-                store_user_task.cancel()
-
-            logger.exception("Chat request failed")
-
-            try:
+            elif kind == "token":
+                parts.append(value)
                 await send({
-                    "error": "Something went wrong. Please try again.",
+                    "type": "token",
+                    "content": value,
                     "conversation_id": conversation_id,
                 })
-            except Exception:
-                pass  # the connection is gone
+
+            elif kind == "done":
+                final_answer = value["answer"]
+
+    except asyncio.CancelledError:
+        if not turn.streaming:
+            raise  # the connection closed before anything started
+
+        # The user pressed stop. The service saves what was written.
+        cancelled = True
+
+    except ChatServiceError as error:
+        logger.warning("Chat service error %s: %s", error.code.name, error.message)
+
+        await send({
+            "error": SERVICE_ERROR_MESSAGES.get(error.code, GENERIC_ERROR),
+            "conversation_id": conversation_id,
+        })
+        return
+
+    except Exception:
+        logger.exception("Chat request failed")
+
+        try:
+            await send({"error": GENERIC_ERROR, "conversation_id": conversation_id})
+        except Exception:
+            pass  # the connection is gone
+
+        return
+
+    finally:
+        turn.streaming = False
+        await events.aclose()
+
+    answer = final_answer if final_answer is not None else "".join(parts)
+
+    await send({
+        "type": "done",
+        "query": query,
+        "answer": answer,
+        "conversation_id": conversation_id,
+        "results": results,
+        "cancelled": cancelled,
+    })
 
 
 @router.websocket("/ws/chat")

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from history import router as history_router
 import models  # noqa: F401  (registers the tables)
-import retriever_client
+import chat_client
 import routes
 import websocket
 from auth import ALLOWED_ORIGINS
@@ -21,8 +21,8 @@ async def lifespan(app: FastAPI):
             index.create(bind=engine, checkfirst=True)
 
     yield
-    # Close the long-lived gRPC streams to the retriever
-    await retriever_client.close()
+    # Close the gRPC channel to the chat service
+    await chat_client.close()
 
 
 app = FastAPI(title="Chat orchestrator", lifespan=lifespan)
