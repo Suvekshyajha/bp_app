@@ -1,3 +1,4 @@
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Identity } from "../types";
 import { getHealth } from "../api";
@@ -32,9 +33,10 @@ export function ChatPage({
     deleteConversation,
   } = useConversations(onLogout);
 
-  // A brand-new chat the server has not seen has no history to load
+  // A brand-new chat the server has not seen has no history to load.
   const selectedIsLocal =
-    conversations.find((conversation) => conversation.id === selectedId)?.isLocal ?? false;
+    conversations.find((conversation) => conversation.id === selectedId)
+      ?.isLocal ?? false;
 
   const {
     messages,
@@ -46,23 +48,30 @@ export function ChatPage({
     addMessage,
     updateMessage,
     removeMessage,
+    removeAfter,
     removeChat,
   } = useChatMessages(selectedId, selectedIsLocal, onLogout);
 
   const { status, send, cancel } = useChatSocket(onLogout);
 
   const [draft, setDraft] = useState("");
-  // Which chats are waiting for an answer. Several can wait at the same time.
+
+  // Which chats are waiting for an answer.
+  // Several chats can wait at the same time.
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [apiError, setApiError] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const sendingRef = useRef<Set<string>>(new Set());
 
-  // After a "too many messages" reply, sending is paused until this time
+  // After a rate-limit response, sending is paused until this time.
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [now, setNow] = useState(() => Date.now());
-  const cooldownSeconds = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+
+  const cooldownSeconds = Math.max(
+    0,
+    Math.ceil((cooldownUntil - now) / 1000),
+  );
 
   useEffect(() => {
     if (cooldownUntil <= Date.now()) return;
@@ -70,7 +79,10 @@ export function ChatPage({
     const timer = window.setInterval(() => {
       const current = Date.now();
       setNow(current);
-      if (current >= cooldownUntil) window.clearInterval(timer);
+
+      if (current >= cooldownUntil) {
+        window.clearInterval(timer);
+      }
     }, 500);
 
     return () => window.clearInterval(timer);
@@ -79,8 +91,11 @@ export function ChatPage({
   const isSending = sendingIds.has(selectedId);
 
   const markSending = useCallback((id: string, on: boolean) => {
-    if (on) sendingRef.current.add(id);
-    else sendingRef.current.delete(id);
+    if (on) {
+      sendingRef.current.add(id);
+    } else {
+      sendingRef.current.delete(id);
+    }
 
     setSendingIds(new Set(sendingRef.current));
   }, []);
@@ -101,6 +116,8 @@ export function ChatPage({
     };
   }, []);
 
+  // Sends a message and streams the assistant response.
+  // Can also be used to retry an existing user message.
   const sendExistingMessage = useCallback(
     async (query: string, messageId: string, conversationId: string) => {
       if (sendingRef.current.has(conversationId)) return;
@@ -113,7 +130,7 @@ export function ChatPage({
         error: undefined,
       }));
 
-      // The assistant bubble is created when the first token arrives
+      // The assistant bubble is created when the first token arrives.
       const assistantId = crypto.randomUUID();
       let started = false;
 
@@ -137,7 +154,10 @@ export function ChatPage({
 
       try {
         const response = await send(
-          { query, conversation_id: conversationId },
+          {
+            query,
+            conversation_id: conversationId,
+          },
           handleToken,
         );
 
@@ -147,10 +167,10 @@ export function ChatPage({
           error: undefined,
         }));
 
-        markSynced(conversationId); // the server now has this chat
+        markSynced(conversationId);
 
         if (started) {
-          // Finish the bubble we were streaming into
+          // Finish the assistant bubble we were streaming into.
           updateMessage(conversationId, assistantId, (message) => ({
             ...message,
             content: response.answer,
@@ -166,8 +186,10 @@ export function ChatPage({
           });
         }
       } catch (error) {
-        // Drop a half-written answer so a retry does not leave a duplicate
-        if (started) removeMessage(conversationId, assistantId);
+        // Remove a partially written answer if the request fails.
+        if (started) {
+          removeMessage(conversationId, assistantId);
+        }
 
         if (error instanceof RateLimitError) {
           const until = Date.now() + error.retryAfter * 1000;
@@ -189,18 +211,29 @@ export function ChatPage({
         markSending(conversationId, false);
       }
     },
-    [addMessage, markSending, markSynced, removeMessage, send, updateMessage],
+    [
+      addMessage,
+      markSending,
+      markSynced,
+      removeMessage,
+      send,
+      updateMessage,
+    ],
   );
 
+  // Send a brand-new message.
   const handleSend = useCallback(
     (rawText?: string) => {
       const query = (rawText ?? draft).trim().slice(0, 4000);
 
-      if (!query || sendingRef.current.has(selectedId) || !selectedId) return;
+      if (!query || sendingRef.current.has(selectedId) || !selectedId) {
+        return;
+      }
 
-      // Wait until this chat's history is shown, and respect the rate limit.
-      // The draft stays in the box.
-      if (historyStatus !== "ready" || cooldownSeconds > 0) return;
+      // Wait until history is loaded and respect the rate limit.
+      if (historyStatus !== "ready" || cooldownSeconds > 0) {
+        return;
+      }
 
       const messageId = crypto.randomUUID();
       const conversationId = selectedId;
@@ -218,16 +251,30 @@ export function ChatPage({
 
       void sendExistingMessage(query, messageId, conversationId);
     },
-    [addMessage, cooldownSeconds, draft, historyStatus, selectedId, sendExistingMessage, touchConversation],
+    [
+      addMessage,
+      cooldownSeconds,
+      draft,
+      historyStatus,
+      selectedId,
+      sendExistingMessage,
+      touchConversation,
+    ],
   );
 
+  // Retry a failed user message.
   const handleRetry = useCallback(
     (messageId: string) => {
       const failedMessage = messages.find(
         (message) => message.id === messageId,
       );
 
-      if (cooldownSeconds > 0) return;
+      if (
+        cooldownSeconds > 0 ||
+        sendingRef.current.has(selectedId)
+      ) {
+        return;
+      }
 
       if (
         !failedMessage ||
@@ -245,13 +292,127 @@ export function ChatPage({
         selectedId,
       );
     },
-    [cooldownSeconds, messages, selectedId, sendExistingMessage, touchConversation],
+    [
+      cooldownSeconds,
+      messages,
+      selectedId,
+      sendExistingMessage,
+      touchConversation,
+    ],
+  );
+
+  // Edit an existing user message and generate a new response.
+  const handleEdit = useCallback(
+    (messageId: string, text: string): boolean => {
+      const editedMessage = messages.find(
+        (message) => message.id === messageId,
+      );
+
+      const query = text.trim().slice(0, 4000);
+
+      if (
+        !query ||
+        !selectedId ||
+        cooldownSeconds > 0 ||
+        sendingRef.current.has(selectedId)
+      ) {
+        return false;
+      }
+
+      if (!editedMessage || editedMessage.role !== "user") {
+        return false;
+      }
+
+      // Remove the old assistant response and all messages after
+      // the message being edited.
+      removeAfter(selectedId, messageId);
+
+      // Update the existing user message with the edited text.
+      updateMessage(selectedId, messageId, (message) => ({
+        ...message,
+        content: query,
+        status: "pending",
+        error: undefined,
+      }));
+
+      touchConversation(selectedId, query);
+
+      // Generate a new response using the edited text.
+      void sendExistingMessage(query, messageId, selectedId);
+
+      return true;
+    },
+    [
+      cooldownSeconds,
+      messages,
+      removeAfter,
+      selectedId,
+      sendExistingMessage,
+      touchConversation,
+      updateMessage,
+    ],
+  );
+
+  // Regenerate the assistant response for the preceding user message.
+  const handleRegenerate = useCallback(
+    (assistantMessageId: string) => {
+      if (
+        !selectedId ||
+        cooldownSeconds > 0 ||
+        sendingRef.current.has(selectedId)
+      ) {
+        return;
+      }
+
+      const assistantIndex = messages.findIndex(
+        (message) => message.id === assistantMessageId,
+      );
+
+      if (assistantIndex === -1 || assistantIndex === 0) {
+        return;
+      }
+
+      const assistantMessage = messages[assistantIndex];
+      const userMessage = messages[assistantIndex - 1];
+
+      // Regenerate is only valid for an assistant message
+      // immediately following a user message.
+      if (
+        assistantMessage.role !== "assistant" ||
+        userMessage.role !== "user"
+      ) {
+        return;
+      }
+
+      // Keep the user message but remove the old assistant response
+      // and anything that came after it.
+      removeAfter(selectedId, userMessage.id);
+
+      touchConversation(selectedId);
+
+      // Generate a fresh assistant response.
+      void sendExistingMessage(
+        userMessage.content,
+        userMessage.id,
+        selectedId,
+      );
+    },
+    [
+      cooldownSeconds,
+      messages,
+      removeAfter,
+      selectedId,
+      sendExistingMessage,
+      touchConversation,
+    ],
   );
 
   const handleLogout = () => {
     const confirmed = window.confirm("Are you sure you want to log out?");
 
-    if (confirmed) onLogout();
+    if (confirmed) {
+      onLogout();
+    }
   };
 
   const handleDelete = (id: string) => {
@@ -260,7 +421,7 @@ export function ChatPage({
     );
 
     if (confirmed) {
-      cancel(id); // stop its answer if one is being written
+      cancel(id);
       removeChat(id);
       deleteConversation(id);
     }
@@ -293,8 +454,11 @@ export function ChatPage({
           onLoadMore={() => void loadMore()}
           onReload={retryConversations}
           onNew={() => {
-            // An empty chat is already a "new chat": do not pile up blank ones
-            if (messages.length > 0) createConversation();
+            // An empty chat is already a new chat.
+            if (messages.length > 0) {
+              createConversation();
+            }
+
             setSidebarOpen(false);
           }}
           onSelect={handleSelect}
@@ -316,6 +480,7 @@ export function ChatPage({
 
           <div className="topbar-title">
             <span className="topbar-kicker">YOUR WORKSPACE</span>
+
             <strong>
               {conversations.find(
                 (conversation) => conversation.id === selectedId,
@@ -355,9 +520,13 @@ export function ChatPage({
           onLoadEarlier={() => void loadEarlier()}
           onReload={retryMessages}
           onRetry={handleRetry}
+          onEdit={handleEdit}
+          onRegenerate={handleRegenerate}
+          actionsDisabled={isSending || cooldownSeconds > 0}
           onPrompt={(prompt) => {
             setDraft(prompt);
             setSidebarOpen(false);
+
             window.setTimeout(
               () => document.getElementById("chat-message-input")?.focus(),
               0,

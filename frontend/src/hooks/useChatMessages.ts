@@ -1,3 +1,4 @@
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, ServerMessage } from "../types";
 import { UnauthorizedError, getMessages } from "../api";
@@ -6,7 +7,7 @@ export type HistoryStatus = "loading" | "ready" | "error";
 
 interface ChatState {
   messages: ChatMessage[];
-  nextCursor: string | null; // leads to OLDER messages; null = nothing older
+  nextCursor: string | null;
   status: HistoryStatus;
   loadingEarlier: boolean;
 }
@@ -30,7 +31,6 @@ function fromServer(item: ServerMessage): ChatMessage {
   };
 }
 
-// Put a page of older messages in front of what is already shown
 function addOlder(current: ChatMessage[], older: ServerMessage[]): ChatMessage[] {
   const known = new Set(current.map((message) => message.id));
 
@@ -62,7 +62,10 @@ export function useChatMessages(
 
   const patch = useCallback(
     (id: string, update: (chat: ChatState) => ChatState) => {
-      setChats((current) => ({ ...current, [id]: update(current[id] ?? EMPTY_CHAT) }));
+      setChats((current) => ({
+        ...current,
+        [id]: update(current[id] ?? EMPTY_CHAT),
+      }));
     },
     [],
   );
@@ -82,7 +85,10 @@ export function useChatMessages(
         })
         .catch((error: unknown) => {
           if (deletedRef.current.has(id)) return;
-          if (error instanceof UnauthorizedError) onAuthErrorRef.current?.();
+
+          if (error instanceof UnauthorizedError) {
+            onAuthErrorRef.current?.();
+          }
 
           patch(id, (chat) => ({ ...chat, status: "error" }));
         });
@@ -90,7 +96,7 @@ export function useChatMessages(
     [patch],
   );
 
-  // First time a chat is opened: load its latest page
+  // First time a chat is opened: load its latest page.
   useEffect(() => {
     if (requestedRef.current.has(selectedId)) return;
 
@@ -104,14 +110,17 @@ export function useChatMessages(
     loadLatest(selectedId);
   }, [loadLatest, patch, selectedId]);
 
-  // "Load earlier messages"
+  // Load an older page of messages.
   const loadEarlier = useCallback(async () => {
     const id = selectedId;
     const chat = chats[id];
 
     if (!chat?.nextCursor || chat.loadingEarlier) return;
 
-    patch(id, (current) => ({ ...current, loadingEarlier: true }));
+    patch(id, (current) => ({
+      ...current,
+      loadingEarlier: true,
+    }));
 
     try {
       const page = await getMessages(id, chat.nextCursor);
@@ -125,17 +134,25 @@ export function useChatMessages(
         messages: addOlder(current.messages, page.items),
       }));
     } catch (error) {
-      if (error instanceof UnauthorizedError) onAuthErrorRef.current?.();
+      if (error instanceof UnauthorizedError) {
+        onAuthErrorRef.current?.();
+      }
 
-      patch(id, (current) => ({ ...current, loadingEarlier: false }));
+      patch(id, (current) => ({
+        ...current,
+        loadingEarlier: false,
+      }));
     }
   }, [chats, patch, selectedId]);
 
   const change = useCallback(
     (id: string, update: (messages: ChatMessage[]) => ChatMessage[]) => {
-      if (deletedRef.current.has(id)) return; // a reply for a deleted chat
+      if (deletedRef.current.has(id)) return;
 
-      patch(id, (chat) => ({ ...chat, messages: update(chat.messages) }));
+      patch(id, (chat) => ({
+        ...chat,
+        messages: update(chat.messages),
+      }));
     },
     [patch],
   );
@@ -148,9 +165,15 @@ export function useChatMessages(
   );
 
   const updateMessage = useCallback(
-    (id: string, messageId: string, update: (message: ChatMessage) => ChatMessage) => {
+    (
+      id: string,
+      messageId: string,
+      update: (message: ChatMessage) => ChatMessage,
+    ) => {
       change(id, (messages) =>
-        messages.map((message) => (message.id === messageId ? update(message) : message)),
+        messages.map((message) =>
+          message.id === messageId ? update(message) : message,
+        ),
       );
     },
     [change],
@@ -158,16 +181,21 @@ export function useChatMessages(
 
   const removeMessage = useCallback(
     (id: string, messageId: string) => {
-      change(id, (messages) => messages.filter((message) => message.id !== messageId));
+      change(id, (messages) =>
+        messages.filter((message) => message.id !== messageId),
+      );
     },
     [change],
   );
 
-  // Keep the messages up to and including `messageId`, drop everything after it
+  // Keep the messages up to and including messageId.
+  // Everything after that message is removed from local state.
   const removeAfter = useCallback(
     (id: string, messageId: string) => {
       change(id, (messages) => {
-        const index = messages.findIndex((message) => message.id === messageId);
+        const index = messages.findIndex(
+          (message) => message.id === messageId,
+        );
 
         return index === -1 ? messages : messages.slice(0, index + 1);
       });
@@ -197,7 +225,7 @@ export function useChatMessages(
     addMessage,
     updateMessage,
     removeMessage,
-    removeAfter, // NEW: this line was missing
+    removeAfter,
     removeChat,
   } as const;
 }
