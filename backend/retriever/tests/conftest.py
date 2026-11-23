@@ -14,3 +14,137 @@ os.environ["CHAT_ENCRYPTION_KEYS"] = Fernet.generate_key().decode()
 os.environ["CHAT_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test_chat.db")
 os.environ.setdefault("QDRANT_URL", "http://localhost:6333")
 os.environ.setdefault("GROQ_API_KEY", "test-key")
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures for test_turn.py and test_grpc.py.
+#
+# They replace the model, the search and Qdrant with fakes by patching the
+# names inside `turn` (the module that uses them). `turn` is imported inside
+# the fixtures, not here, so test_chat_service.py can still install its own
+# fakes before the service modules are first imported.
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+import pytest
+
+
+async def drain_background():
+    """Wait until the background indexing tasks started by a turn are done."""
+
+    import turn
+
+    while turn._background:
+        await asyncio.gather(*list(turn._background), return_exceptions=True)
+
+
+@pytest.fixture
+def session_factory():
+    """An empty database for this test. Yields SessionLocal."""
+
+    from database import Base, SessionLocal, engine, migrate_schema
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    migrate_schema()
+
+    yield SessionLocal
+
+
+@pytest.fixture
+def db(session_factory):
+    """A session for looking at what was saved."""
+
+    with session_factory() as session:
+        yield session
+
+
+class FakeModel:
+    """Stands in for llm.stream_response.
+
+    tokens       what it writes, one piece at a time
+    fail_after   raise RuntimeError before writing token number N
+    block_after  wait forever before writing token number N (until cancelled)
+    calls        one dict per call: query, context, history
+    closed       True once the stream has been closed or has finished
+    """
+
+    def __init__(self):
+        self.tokens = ["Hel", "lo"]
+        self.fail_after = None
+        self.block_after = None
+        self.calls = []
+        self.closed = False
+
+    async def stream(self, query, context, history=None):
+        self.calls.append({"query": query, "context": context, "history": history})
+        self.closed = False
+
+        try:
+            for number, token in enumerate(self.tokens):
+                if self.block_after == number:
+                    await asyncio.Event().wait()
+
+                if self.fail_after == number:
+                    raise RuntimeError("model failed")
+
+                yield token
+        finally:
+            self.closed = True
+
+
+@pytest.fixture
+def model(monkeypatch):
+    import turn
+
+    fake = FakeModel()
+    monkeypatch.setattr(turn, "stream_response", fake.stream)
+    return fake
+
+
+@pytest.fixture
+def indexed(monkeypatch):
+    """Everything sent to Qdrant: (user_id, conversation_id, role, content)."""
+
+    import turn
+
+    stored = []
+
+    def store_message(user_id, conversation_id, role, content, message_id=None):
+        stored.append((user_id, conversation_id, role, content))
+        return message_id
+
+    monkeypatch.setattr(turn, "store_message", store_message)
+    return stored
+
+
+class FakeSearch:
+    """Stands in for retrieval.retrieve_messages.
+
+    results  what the search returns
+    error    if set, the search raises it
+    calls    the keyword arguments of every search
+    """
+
+    def __init__(self):
+        self.results = []
+        self.error = None
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+
+        if self.error:
+            raise self.error
+
+        return list(self.results)
+
+
+@pytest.fixture
+def retrieved(monkeypatch):
+    import turn
+
+    fake = FakeSearch()
+    monkeypatch.setattr(turn, "retrieve_messages", fake)
+    return fake

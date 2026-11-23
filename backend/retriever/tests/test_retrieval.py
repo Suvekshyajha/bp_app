@@ -11,16 +11,15 @@ import types
 
 import pytest
 
-# ---- Fakes (installed before the module under test is imported) ----
+# ---- Fakes ----
 
 # The question is the vector [1, 0], so a stored vector [s, 0] has a
 # similarity of exactly s to it.
-fake_embeddings = types.ModuleType("embeddings")
-fake_embeddings.embed_query = lambda text: {
-    "dense": [1.0, 0.0],
-    "sparse": {"indices": [1], "values": [1.0]},
-}
-sys.modules["embeddings"] = fake_embeddings
+def fake_embed_query(text):
+    return {
+        "dense": [1.0, 0.0],
+        "sparse": {"indices": [1], "values": [1.0]},
+    }
 
 
 class FakeClient:
@@ -34,12 +33,32 @@ class FakeClient:
 
 
 fake_client = FakeClient()
-fake_store = types.ModuleType("qdrant_store")
-fake_store.client = fake_client
-fake_store.COLLECTION_NAME = "chat_messages"
-sys.modules["qdrant_store"] = fake_store
 
-import retrieval  # noqa: E402
+# Import retrieval with fake embeddings / Qdrant modules, so this file needs
+# no model download and no Qdrant server. The sys.modules entries are put
+# back afterwards, so other test files (which import the real service
+# modules) are not affected by these fakes.
+_names = ["embeddings", "qdrant_store", "retrieval"]
+_saved = {name: sys.modules.get(name) for name in _names}
+
+_fake_embeddings = types.ModuleType("embeddings")
+_fake_embeddings.embed_query = fake_embed_query
+_fake_store = types.ModuleType("qdrant_store")
+_fake_store.client = fake_client
+_fake_store.COLLECTION_NAME = "chat_messages"
+
+try:
+    sys.modules["embeddings"] = _fake_embeddings
+    sys.modules["qdrant_store"] = _fake_store
+    sys.modules.pop("retrieval", None)
+
+    import retrieval  # noqa: E402
+finally:
+    for _name in _names:
+        if _saved[_name] is None:
+            sys.modules.pop(_name, None)
+        else:
+            sys.modules[_name] = _saved[_name]
 
 
 def point(point_id, similarity, fusion_score=0.03):
@@ -56,6 +75,9 @@ def point(point_id, similarity, fusion_score=0.03):
 def reset_fake(monkeypatch):
     fake_client.calls.clear()
     fake_client.points = []
+    # Whichever copy of retrieval this is, make it use the fakes
+    monkeypatch.setattr(retrieval, "client", fake_client)
+    monkeypatch.setattr(retrieval, "embed_query", fake_embed_query)
     monkeypatch.setattr(retrieval, "MIN_SIMILARITY", 0.5)
 
 

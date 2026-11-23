@@ -64,6 +64,12 @@ def _read(path: str) -> bytes:
 
 
 def _make_channel() -> grpc.aio.Channel:
+    # Half a client certificate would silently turn mutual TLS off: refuse
+    if bool(CHAT_TLS_CLIENT_CERT) != bool(CHAT_TLS_CLIENT_KEY):
+        raise RuntimeError(
+            "Set both CHAT_TLS_CLIENT_CERT and CHAT_TLS_CLIENT_KEY, or neither."
+        )
+
     if CHAT_TLS_CA:
         client_cert = CHAT_TLS_CLIENT_CERT and CHAT_TLS_CLIENT_KEY
 
@@ -79,6 +85,9 @@ def _make_channel() -> grpc.aio.Channel:
         "Talking to the chat service WITHOUT TLS (CHAT_TLS_CA is not set). "
         "Only do this on a private network."
     )
+
+    if CHAT_SERVICE_TOKEN:
+        logger.warning("The service token is being sent without encryption.")
 
     return grpc.aio.insecure_channel(CHAT_SERVICE_ADDRESS)
 
