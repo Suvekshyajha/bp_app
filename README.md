@@ -361,6 +361,7 @@ COOKIE_SECURE=false
 COOKIE_SAMESITE=lax
 CHAT_RATE_LIMIT_MESSAGES=10
 CHAT_RATE_LIMIT_WINDOW_SECONDS=60
+
 ```
 
 All of these have the defaults shown above. The orchestrator no longer needs any `GROQ_*` setting.
