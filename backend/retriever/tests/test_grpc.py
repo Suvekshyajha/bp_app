@@ -296,3 +296,34 @@ def test_a_user_message_id_that_is_not_a_uuid_is_invalid_argument(session_factor
             return error.value.code()
 
     assert run(scenario) == grpc.StatusCode.INVALID_ARGUMENT
+
+# ---------- prompt-injection hygiene on the way in ----------
+
+def test_hidden_characters_are_removed_before_the_question_is_saved(session_factory, db, model, indexed, retrieved):
+    from models import Message
+
+    async def scenario():
+        async with running_server() as (chat, _):
+            events = [e async for e in chat.Chat(request(query="hel\u200blo\U000e0041"))]
+            await drain_background()
+            return events
+
+    run(scenario)
+
+    db.expire_all()
+    saved = db.query(Message).filter(Message.role == "user").one()
+
+    assert saved.content == "hello"
+    assert model.calls[0]["query"] == "hello"
+
+
+@pytest.mark.parametrize("bad", ["\u200b\u200b", "x" * 4001])
+def test_empty_after_cleaning_or_too_long_is_invalid_argument(session_factory, model, indexed, retrieved, bad):
+    async def scenario():
+        async with running_server() as (chat, _):
+            with pytest.raises(grpc.aio.AioRpcError) as error:
+                [e async for e in chat.Chat(request(query=bad))]
+            return error.value.code()
+
+    assert run(scenario) == grpc.StatusCode.INVALID_ARGUMENT
+    assert model.calls == []
