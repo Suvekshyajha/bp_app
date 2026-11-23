@@ -12,6 +12,9 @@ saved, because the saving runs shielded in the `finally` block.
 
 import asyncio
 import logging
+import uuid
+from contextlib import aclosing
+from dataclasses import dataclass
 from dataclasses import dataclass
 
 import repository
@@ -157,11 +160,13 @@ def context_for_storage(results: list[dict]) -> list[dict]:
     return saved
 
 
+
 async def _save_answer(
     user_id: str,
     conversation_id: str,
     answer: str,
     results: list[dict],
+    message_id: str | None = None,
 ) -> str:
     """Save the answer (with the context it used), then index it in the background."""
 
@@ -174,6 +179,7 @@ async def _save_answer(
         "assistant",
         answer,
         context_for_storage(results),
+        message_id,
     )
     _spawn(_index(user_id, conversation_id, "assistant", answer, message_id))
 
@@ -202,44 +208,107 @@ async def _cut_from(user_id: str, conversation_id: str, message_id: str) -> None
     await asyncio.to_thread(repository.delete_messages, conversation_id, ids)
 
 
-async def run_turn(
+class TurnInProgress(Exception):
+    """The same question is already being answered and did not finish in time."""
+
+
+# Questions being answered right now, by (chat id, question id). A second
+# request for the same question waits here instead of starting another answer.
+# (One process only. With several service processes, use a database lock.)
+_running: dict[tuple[str, str], asyncio.Event] = {}
+CLAIM_WAIT_SECONDS = 60
+
+
+async def _claim(key: tuple[str, str]) -> None:
+    """Become the only turn running for this question, waiting if needed."""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + CLAIM_WAIT_SECONDS
+
+    while key in _running:
+        remaining = deadline - loop.time()
+
+        if remaining <= 0:
+            raise TurnInProgress(key[1])
+
+        try:
+            await asyncio.wait_for(_running[key].wait(), remaining)
+        except asyncio.TimeoutError:
+            raise TurnInProgress(key[1])
+
+    # No await between the check above and this line, so two requests
+    # can never both get here.
+    _running[key] = asyncio.Event()
+
+
+def _release(key: tuple[str, str]) -> None:
+    event = _running.pop(key, None)
+
+    if event is not None:
+        event.set()  # wake up whoever was waiting for this question
+
+
+def answer_id_for(user_message_id: str) -> str:
+    """The same question always gets the same answer id, so saving an
+    answer twice can never leave two answers."""
+
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_message_id}:assistant"))
+
+
+def _results_from_saved(items: list[dict]) -> list[dict]:
+    """Saved related messages, back in the shape a Context event carries."""
+
+    return [
+        {
+            "id": item.get("id", ""),
+            "score": item.get("score", 0.0),
+            "payload": {
+                "role": item.get("role"),
+                "content": item.get("content", ""),
+                "timestamp": item.get("timestamp"),
+            },
+        }
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+
+def _replay(user_message_id: str, answer: dict) -> list:
+    """The events of a turn that already happened, with no model call."""
+
+    return [
+        Context(_results_from_saved(answer["context"])),
+        Token(answer["content"]),
+        Done(
+            user_message_id=user_message_id,
+            assistant_message_id=answer["id"],
+            answer=answer["content"],
+        ),
+    ]
+
+
+async def _fresh_turn(
     user_id: str,
     conversation_id: str,
     query: str,
-    user_message_id: str | None = None,
+    user_message_id: str | None,
 ):
-    """Yield Context, then Token (many), then Done. Raise on failure.
+    """Search, save the question, stream the answer, save the answer."""
 
-    If `user_message_id` is already in this chat, that message and everything
-    after it are deleted first, and the question is saved again under the
-    same id. (Edit, regenerate and retry all work this way.)
-    """
-
-    # 1. The chat must exist and belong to this user
-    allowed = await asyncio.to_thread(
-        repository.get_or_create_conversation,
-        user_id,
-        conversation_id,
-        query,
-    )
-
-    if not allowed:
-        raise ConversationNotFound(conversation_id)
-
-    # 1b. Edit / regenerate / retry: remove the old question and everything
-    #     after it BEFORE the history is read, so the old answer is not
-    #     sent to the model again.
+    # Edit / regenerate / retry: remove the old question and everything
+    # after it BEFORE the history is read, so the old answer is not
+    # sent to the model again.
     if user_message_id:
         await _cut_from(user_id, conversation_id, user_message_id)
 
-    # 2. What was said earlier in THIS chat (read before the new question
-    #    is saved, so the question is not sent twice)
+    # What was said earlier in THIS chat (read before the new question
+    # is saved, so the question is not sent twice)
     history = await asyncio.to_thread(
         repository.load_chat_history, conversation_id
     )
 
-    # 3. Related older messages. Ask for extra: the ones already in the
-    #    history are removed.
+    # Related older messages. Ask for extra: the ones already in the
+    # history are removed.
     found = await _retrieve(
         query,
         user_id,
@@ -250,15 +319,15 @@ async def run_turn(
 
     yield Context(results)
 
-    # 4. Save the question, then index it in the background (after
-    #    retrieval, so the question cannot retrieve itself)
+    # Save the question, then index it in the background (after
+    # retrieval, so the question cannot retrieve itself)
     extra = {"message_id": user_message_id} if user_message_id else {}
     user_message_id = await asyncio.to_thread(
         repository.add_message, conversation_id, "user", query, **extra
     )
     _spawn(_index(user_id, conversation_id, "user", query, user_message_id))
 
-    # 5. Stream the answer
+    # Stream the answer
     parts: list[str] = []
     failed = False
     saving: asyncio.Future | None = None
@@ -282,7 +351,13 @@ async def run_turn(
         # interrupt the save.
         if not failed:
             saving = asyncio.ensure_future(
-                _save_answer(user_id, conversation_id, "".join(parts), results)
+                _save_answer(
+                    user_id,
+                    conversation_id,
+                    "".join(parts),
+                    results,
+                    answer_id_for(user_message_id),
+                )
             )
             await asyncio.shield(saving)
 
@@ -291,3 +366,65 @@ async def run_turn(
         assistant_message_id=saving.result() if saving else "",
         answer="".join(parts),
     )
+
+
+async def run_turn(
+    user_id: str,
+    conversation_id: str,
+    query: str,
+    user_message_id: str | None = None,
+    regenerate: bool = False,
+):
+    """Yield Context, then Token (many), then Done. Raise on failure.
+
+    `user_message_id` is the idempotency key: the id the browser chose for
+    this question. Sending the same question with the same id again is safe:
+
+      - Already answered, same text:  the saved answer is replayed. No model
+        call, nothing new saved.
+      - Still being answered:         waits for that turn, then replays it
+        (TurnInProgress if it takes longer than CLAIM_WAIT_SECONDS).
+      - Saved but never answered (the model failed), or the text changed
+        (edit), or `regenerate` is True:  that message and everything after
+        it are deleted and the question is answered again.
+    """
+
+    # The chat must exist and belong to this user
+    allowed = await asyncio.to_thread(
+        repository.get_or_create_conversation,
+        user_id,
+        conversation_id,
+        query,
+    )
+
+    if not allowed:
+        raise ConversationNotFound(conversation_id)
+
+    key = (conversation_id, user_message_id) if user_message_id else None
+
+    if key:
+        await _claim(key)
+
+    try:
+        if key and not regenerate:
+            state = await asyncio.to_thread(
+                repository.get_turn_state,
+                user_id,
+                conversation_id,
+                user_message_id,
+            )
+
+            if state and state["answer"] and state["query"] == query:
+                for event in _replay(user_message_id, state["answer"]):
+                    yield event
+                return
+
+        async with aclosing(
+            _fresh_turn(user_id, conversation_id, query, user_message_id)
+        ) as events:
+            async for event in events:
+                yield event
+
+    finally:
+        if key:
+            _release(key)

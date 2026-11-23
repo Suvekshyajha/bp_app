@@ -2,23 +2,21 @@ import asyncio
 import hmac
 import logging
 import os
-import uuid  
+import uuid 
+from contextlib import aclosing
 from datetime import datetime, timezone
-
 import grpc
 import groq
 from google.protobuf.timestamp_pb2 import Timestamp
-
 import chat_pb2
 import chat_pb2_grpc
-
 import repository
 from crypto import check_configured
 from database import Base, engine, migrate_schema
 from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
 from service_auth import require_service_token
-from turn import Context, Done, Token, run_turn
+from turn import Context, Done, Token, TurnInProgress, run_turn
 
 
 logger = logging.getLogger(__name__)
@@ -180,10 +178,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id, conversation_id and query are required",
             )
-
-        # NEW: the id the browser chose for this question (a UUID).
-        # If the chat already has it, run_turn deletes it and everything
-        # after it first (edit / regenerate / retry).
+                # The idempotency key: the id the browser chose for this question.
+        # Same id + same text again = the saved answer is sent back.
         extra = {}
 
         if request.user_message_id:
@@ -196,32 +192,42 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 )
 
         try:
-            async for event in run_turn(
-                request.user_id,
-                request.conversation_id,
-                request.query.strip(),
-                **extra,  # NEW
-            ):
-                if isinstance(event, Context):
-                    yield chat_pb2.ChatEvent(
-                        context=chat_pb2.Context(
-                            messages=[to_retrieved_message(r) for r in event.results]
+            async with aclosing(
+                run_turn(
+                    request.user_id,
+                    request.conversation_id,
+                    request.query.strip(),
+                    regenerate=request.regenerate,
+                    **extra,
+                )
+            ) as events:
+                async for event in events:
+                    if isinstance(event, Context):
+                        yield chat_pb2.ChatEvent(
+                            context=chat_pb2.Context(
+                                messages=[to_retrieved_message(r) for r in event.results]
+                            )
                         )
-                    )
 
-                elif isinstance(event, Token):
-                    yield chat_pb2.ChatEvent(
-                        token=chat_pb2.Token(text=event.text)
-                    )
-
-                elif isinstance(event, Done):
-                    yield chat_pb2.ChatEvent(
-                        done=chat_pb2.Done(
-                            user_message_id=event.user_message_id,
-                            assistant_message_id=event.assistant_message_id,
-                            answer=event.answer,
+                    elif isinstance(event, Token):
+                        yield chat_pb2.ChatEvent(
+                            token=chat_pb2.Token(text=event.text)
                         )
-                    )
+
+                    elif isinstance(event, Done):
+                        yield chat_pb2.ChatEvent(
+                            done=chat_pb2.Done(
+                                user_message_id=event.user_message_id,
+                                assistant_message_id=event.assistant_message_id,
+                                answer=event.answer,
+                            )
+                        )
+
+        except TurnInProgress:
+            await context.abort(
+                grpc.StatusCode.ABORTED,
+                "This message is already being answered.",
+            )
 
         except ConversationNotFound:
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
