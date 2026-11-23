@@ -163,6 +163,18 @@ export function useChatMessages(
     [change],
   );
 
+  // Keep the messages up to and including `messageId`, drop everything after it
+  const removeAfter = useCallback(
+    (id: string, messageId: string) => {
+      change(id, (messages) => {
+        const index = messages.findIndex((message) => message.id === messageId);
+
+        return index === -1 ? messages : messages.slice(0, index + 1);
+      });
+    },
+    [change],
+  );
+
   const removeChat = useCallback((id: string) => {
     deletedRef.current.add(id);
 
@@ -185,6 +197,7 @@ export function useChatMessages(
     addMessage,
     updateMessage,
     removeMessage,
+    removeAfter, // NEW: this line was missing
     removeChat,
   } as const;
 }

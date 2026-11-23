@@ -59,6 +59,7 @@ export interface ServerMessage {
 export interface ChatRequest {
   query: string;
   conversation_id?: string;
+  user_message_id?: string;
 }
 
 export interface ChatResponse {

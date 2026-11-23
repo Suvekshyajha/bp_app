@@ -19,6 +19,9 @@ export function MessageList({
   onLoadEarlier,
   onReload,
   onRetry,
+  onEdit,
+  onRegenerate,
+  actionsDisabled,
   onPrompt,
 }: {
   messages: ChatMessage[];
@@ -29,6 +32,9 @@ export function MessageList({
   onLoadEarlier: () => void;
   onReload: () => void;
   onRetry: (id: string) => void;
+  onEdit: (id: string, text: string) => boolean;
+  onRegenerate: (id: string) => void;
+  actionsDisabled: boolean;
   onPrompt: (prompt: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -113,7 +119,17 @@ export function MessageList({
             </div>
           </section>
         ) : (
-          messages.map((message) => <MessageBubble key={message.id} message={message} onRetry={onRetry} />)
+          messages.map((message, index) => (
+            <MessageBubble
+              key={message.id}
+              message={message}
+              onRetry={onRetry}
+              onEdit={onEdit}
+              onRegenerate={onRegenerate}
+              actionsDisabled={actionsDisabled}
+              canRegenerate={message.role === "assistant" && messages[index - 1]?.role === "user"}
+            />
+          ))
         )}
         {showTyping && <TypingIndicator />}
         <div ref={endRef} />
