@@ -255,3 +255,44 @@ def test_history_errors(session_factory):
         grpc.StatusCode.INVALID_ARGUMENT,
         grpc.StatusCode.INVALID_ARGUMENT,
     ]
+
+# ---------- idempotency over the wire ----------
+
+def test_the_same_user_message_id_twice_gives_the_same_answer_once(session_factory, model, indexed, retrieved, monkeypatch):
+    import turn
+
+    monkeypatch.setattr(turn, "delete_message_points", lambda ids: None)
+    key = "22222222-2222-4222-8222-222222222222"
+
+    async def scenario():
+        async with running_server() as (chat, _):
+            call = lambda: chat_pb2.ChatRequest(
+                user_id="alice-id", conversation_id="chat-0001",
+                query="hello", user_message_id=key,
+            )
+            first = [e async for e in chat.Chat(call())]
+            await drain_background()
+            second = [e async for e in chat.Chat(call())]
+            await drain_background()
+            return first, second
+
+    first, second = run(scenario)
+
+    assert len(model.calls) == 1
+    assert first[-1].done.user_message_id == second[-1].done.user_message_id == key
+    assert first[-1].done.assistant_message_id == second[-1].done.assistant_message_id
+    assert second[-1].done.answer == "Hello"
+
+
+def test_a_user_message_id_that_is_not_a_uuid_is_invalid_argument(session_factory, model, indexed, retrieved):
+    async def scenario():
+        async with running_server() as (chat, _):
+            bad = chat_pb2.ChatRequest(
+                user_id="alice-id", conversation_id="chat-0001",
+                query="hello", user_message_id="not-a-uuid",
+            )
+            with pytest.raises(grpc.aio.AioRpcError) as error:
+                [e async for e in chat.Chat(bad)]
+            return error.value.code()
+
+    assert run(scenario) == grpc.StatusCode.INVALID_ARGUMENT

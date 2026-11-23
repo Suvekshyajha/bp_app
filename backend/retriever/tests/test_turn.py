@@ -246,3 +246,130 @@ def test_stop_before_any_token_saves_no_empty_answer(session_factory, db, model,
     asyncio.run(scenario())
 
     assert saved_messages(db) == [("user", "hello")]
+
+# ---------- idempotency: the same question sent twice ----------
+
+QUESTION_ID = "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.fixture
+def no_index_cleanup(monkeypatch):
+    """Deleting old messages also cleans Qdrant; do nothing there in tests."""
+
+    monkeypatch.setattr(turn, "delete_message_points", lambda ids: None)
+
+
+async def collect_with_id(query="hello", regenerate=False, message_id=QUESTION_ID):
+    return [
+        event
+        async for event in run_turn(
+            ALICE, CHAT, query, user_message_id=message_id, regenerate=regenerate
+        )
+    ]
+
+
+def test_sending_the_same_question_twice_replays_the_answer(session_factory, db, model, indexed, retrieved, no_index_cleanup):
+    async def scenario():
+        first = await collect_with_id()
+        await drain_background()
+        second = await collect_with_id()
+        await drain_background()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert len(model.calls) == 1  # the model was asked once
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+
+    assert isinstance(second[0], Context)
+    assert "".join(e.text for e in second if isinstance(e, Token)) == "Hello"
+    assert second[-1].user_message_id == first[-1].user_message_id == QUESTION_ID
+    assert second[-1].assistant_message_id == first[-1].assistant_message_id
+
+
+def test_two_requests_at_the_same_time_run_the_model_once(session_factory, db, model, indexed, retrieved, no_index_cleanup):
+    async def scenario():
+        results = await asyncio.gather(collect_with_id(), collect_with_id())
+        await drain_background()
+        return results
+
+    first, second = asyncio.run(scenario())
+
+    assert len(model.calls) == 1
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+    assert first[-1].answer == second[-1].answer == "Hello"
+
+
+def test_retry_after_a_failed_answer_asks_the_model_again(session_factory, db, model, indexed, retrieved, no_index_cleanup):
+    model.fail_after = 1
+
+    async def scenario():
+        with pytest.raises(RuntimeError):
+            await collect_with_id()
+
+        model.fail_after = None  # the model works again
+
+        events = await collect_with_id()
+        await drain_background()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert len(model.calls) == 2
+    assert events[-1].answer == "Hello"
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+
+
+def test_regenerate_asks_the_model_again_and_keeps_one_answer(session_factory, db, model, indexed, retrieved, no_index_cleanup):
+    async def scenario():
+        await collect_with_id()
+        await drain_background()
+
+        model.tokens = ["New", " answer"]
+        events = await collect_with_id(regenerate=True)
+        await drain_background()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert len(model.calls) == 2
+    assert events[-1].answer == "New answer"
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "New answer")]
+
+
+def test_editing_the_text_replaces_the_old_question_and_answer(session_factory, db, model, indexed, retrieved, no_index_cleanup):
+    async def scenario():
+        await collect_with_id(query="hello")
+        await drain_background()
+
+        model.tokens = ["Edited"]
+        events = await collect_with_id(query="hello there")
+        await drain_background()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert len(model.calls) == 2
+    assert events[-1].answer == "Edited"
+    assert saved_messages(db) == [("user", "hello there"), ("assistant", "Edited")]
+
+
+def test_a_message_id_cannot_reach_into_someone_elses_chat(session_factory, db, model, indexed, retrieved, no_index_cleanup):
+    asyncio.run(collect_with_id())
+
+    async def mallory():
+        return [e async for e in run_turn("mallory-id", CHAT, "hello", user_message_id=QUESTION_ID)]
+
+    with pytest.raises(ConversationNotFound):
+        asyncio.run(mallory())
+
+    assert len(model.calls) == 1
+
+
+def test_the_claim_is_released_even_when_the_turn_fails(session_factory, model, indexed, retrieved, no_index_cleanup):
+    model.fail_after = 0
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(collect_with_id())
+
+    assert turn._running == {}
