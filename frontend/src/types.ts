@@ -59,7 +59,8 @@ export interface ServerMessage {
 export interface ChatRequest {
   query: string;
   conversation_id?: string;
-  user_message_id?: string;
+  user_message_id?: string; // the idempotency key
+  regenerate?: boolean; // true = a new answer to the same question
 }
 
 export interface ChatResponse {

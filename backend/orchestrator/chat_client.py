@@ -146,12 +146,18 @@ async def chat(
     user_id: str,
     conversation_id: str,
     query: str,
+    user_message_id: str | None = None,
+    regenerate: bool = False,
 ) -> AsyncIterator[tuple[str, object]]:
     """Ask one question and yield what comes back, as (kind, value) pairs:
 
         ("context", [result, ...])     once, before the first token
         ("token", "text")              many
         ("done", {"answer": ..., ...}) once, last
+
+    `user_message_id` is the idempotency key. Sending the same id and text
+    again returns the saved answer instead of asking the model again.
+    `regenerate=True` asks for a new answer to the same question.
 
     Closing this generator (or cancelling the task reading it) cancels the
     gRPC call, and the service stops writing the answer.
@@ -164,11 +170,12 @@ async def chat(
             user_id=user_id,
             conversation_id=conversation_id,
             query=query,
+            user_message_id=user_message_id or "",
+            regenerate=regenerate,
         ),
         timeout=CHAT_TIMEOUT_SECONDS,
         metadata=_metadata(),
     )
-
     try:
         async for event in call:
             kind = event.WhichOneof("event")

@@ -60,6 +60,9 @@ SERVICE_ERROR_MESSAGES = {
     grpc.StatusCode.DEADLINE_EXCEEDED: (
         "The assistant took too long to answer. Please try again."
     ),
+        grpc.StatusCode.ABORTED: (
+        "This message is already being answered. Please wait a moment."
+    ),
     grpc.StatusCode.UNAVAILABLE: (
         "The chat service is unavailable. Please try again shortly."
     ),
@@ -75,6 +78,7 @@ async def answer_question(
     conversation_id: str,
     query: str,
     user_message_id: str | None = None,
+    regenerate: bool = False,
 ) -> None:
     """Ask the chat service and pass what it says on to the browser.
 
@@ -91,8 +95,12 @@ async def answer_question(
     final_answer: str | None = None
     cancelled = False
 
-     # only passed when the browser sent one (edit / regenerate / retry)
+     # The idempotency key. Only passed when the browser sent one.
     extra = {"user_message_id": user_message_id} if user_message_id else {}
+
+    if user_message_id and regenerate:
+        extra["regenerate"] = True
+
     events = chat_client.chat(user_id, conversation_id, query, **extra)
 
     try:
@@ -322,6 +330,7 @@ async def chat(websocket: WebSocket):
             # The id the browser gave this question. If the chat already has
             # it, the chat service deletes it and everything after it first.
             user_message_id = data.get("user_message_id")
+            regenerate = data.get("regenerate") is True
 
             if user_message_id is not None:
                 try:
@@ -358,7 +367,13 @@ async def chat(websocket: WebSocket):
             turns[conversation_id] = turn
             turn.task = asyncio.create_task(
                 answer_question(
-                    send, turn, user_id, conversation_id, query, user_message_id
+                    send,
+                    turn,
+                    user_id,
+                    conversation_id,
+                    query,
+                    user_message_id,
+                    regenerate,
                 )
             )
 

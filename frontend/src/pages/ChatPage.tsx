@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Identity } from "../types";
 import { getHealth } from "../api";
@@ -118,8 +117,18 @@ export function ChatPage({
 
   // Sends a message and streams the assistant response.
   // Can also be used to retry an existing user message.
+  //
+  // messageId is the idempotency key. It is sent with every request, so if
+  // the same question reaches the server twice (a retry after the connection
+  // dropped) it gets the saved answer back instead of a second one.
+  // regenerate = true means "I want a NEW answer to this same question".
   const sendExistingMessage = useCallback(
-    async (query: string, messageId: string, conversationId: string) => {
+    async (
+      query: string,
+      messageId: string,
+      conversationId: string,
+      regenerate = false,
+    ) => {
       if (sendingRef.current.has(conversationId)) return;
 
       markSending(conversationId, true);
@@ -157,6 +166,8 @@ export function ChatPage({
           {
             query,
             conversation_id: conversationId,
+            user_message_id: messageId,
+            regenerate,
           },
           handleToken,
         );
@@ -390,11 +401,12 @@ export function ChatPage({
 
       touchConversation(selectedId);
 
-      // Generate a fresh assistant response.
+      // Generate a fresh assistant response (true = do not replay the old one).
       void sendExistingMessage(
         userMessage.content,
         userMessage.id,
         selectedId,
+        true,
       );
     },
     [
