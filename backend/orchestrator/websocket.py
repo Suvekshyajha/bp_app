@@ -74,6 +74,7 @@ async def answer_question(
     user_id: str,
     conversation_id: str,
     query: str,
+    user_message_id: str | None = None,
 ) -> None:
     """Ask the chat service and pass what it says on to the browser.
 
@@ -90,7 +91,9 @@ async def answer_question(
     final_answer: str | None = None
     cancelled = False
 
-    events = chat_client.chat(user_id, conversation_id, query)
+     # only passed when the browser sent one (edit / regenerate / retry)
+    extra = {"user_message_id": user_message_id} if user_message_id else {}
+    events = chat_client.chat(user_id, conversation_id, query, **extra)
 
     try:
         async for kind, value in events:
@@ -316,7 +319,21 @@ async def chat(websocket: WebSocket):
                 continue
 
             query = query.strip()
+            # The id the browser gave this question. If the chat already has
+            # it, the chat service deletes it and everything after it first.
+            user_message_id = data.get("user_message_id")
 
+            if user_message_id is not None:
+                try:
+                    if not isinstance(user_message_id, str):
+                        raise ValueError
+                    user_message_id = str(uuid.UUID(user_message_id))
+                except ValueError:
+                    await send({
+                        "error": "Invalid message id.",
+                        "conversation_id": conversation_id,
+                    })
+                    continue
             # Forget answers that have finished
             for key in [k for k, t in turns.items() if not t.running]:
                 del turns[key]
@@ -340,7 +357,9 @@ async def chat(websocket: WebSocket):
             turn = ChatTurn()
             turns[conversation_id] = turn
             turn.task = asyncio.create_task(
-                answer_question(send, turn, user_id, conversation_id, query)
+                answer_question(
+                    send, turn, user_id, conversation_id, query, user_message_id
+                )
             )
 
     except WebSocketDisconnect:
