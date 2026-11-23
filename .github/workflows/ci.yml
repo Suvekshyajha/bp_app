@@ -1,3 +1,6 @@
+# Where this file goes: <repo root>/.github/workflows/ci.yml
+# (the root of the repository, NOT inside any service folder)
+
 name: CI
 
 # When to run: on every pull request, and on every push to dev or main.
@@ -69,12 +72,35 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/${{ matrix.service }}/requirements.txt
+          cache-dependency-path: |
+            backend/${{ matrix.service }}/requirements.txt
+            backend/${{ matrix.service }}/requirements-dev.txt
 
+      # Keep the downloaded embedding model between runs. Only the retriever
+      # uses a model. Change "v1" in the key to force a fresh download.
+      - name: Cache Hugging Face models
+        if: matrix.service == 'retriever'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-retriever-v1
+
+      # requirements-dev.txt pulls in requirements.txt and adds the tools
+      # the tests need (pytest, pytest-asyncio, cryptography, grpcio-tools).
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest
+        run: pip install -r requirements-dev.txt
+
+      # chat_pb2.py and chat_pb2_grpc.py are generated from backend/proto/chat.proto
+      # and are not stored in Git, so build them here, the same way you do locally.
+      # This step runs from the repository root, not from the service folder.
+      - name: Generate gRPC code
+        working-directory: ${{ github.workspace }}
+        run: >
+          python -m grpc_tools.protoc
+          -I backend/proto
+          --python_out=backend/${{ matrix.service }}
+          --grpc_python_out=backend/${{ matrix.service }}
+          backend/proto/chat.proto
 
       # llm.py raises an error at import time without GROQ_API_KEY, so give
       # the tests a dummy value. No real key is needed or used.
