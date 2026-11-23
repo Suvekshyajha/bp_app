@@ -13,10 +13,12 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+from cryptography.fernet import Fernet
 
 # The real llm.py needs this at import time
 os.environ.setdefault("GROQ_API_KEY", "test-key")
 
+os.environ.setdefault("CHAT_ENCRYPTION_KEYS", Fernet.generate_key().decode())
 
 # Replace the Qdrant and search modules before anything imports them, so
 # these tests need no embedding model and no running Qdrant. (Run

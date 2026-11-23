@@ -1,6 +1,6 @@
 import logging
 import os
-
+from crypto import decrypt
 from qdrant_client import models
 
 from embeddings import embed_query
@@ -119,7 +119,7 @@ def retrieve_messages(
             kept.append({
                 "id": str(point.id),
                 "score": similarity,
-                "payload": point.payload,
+                "payload": {**point.payload, "content": decrypt(point.payload.get("content", ""))},
             })
 
     logger.info(

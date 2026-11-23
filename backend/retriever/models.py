@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import relationship
 
+from crypto import EncryptedText
 from database import Base
 
 
@@ -16,7 +17,8 @@ class Conversation(Base):
     # checked who the user is before it calls this service.
     user_id = Column(String, nullable=False)
 
-    title = Column(String, nullable=True)
+    # Encrypted at rest (see crypto.py)
+    title = Column(EncryptedText, nullable=True)
     created_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),
@@ -45,7 +47,9 @@ class Message(Base):
         nullable=False,
     )
     role = Column(String, nullable=False)
-    content = Column(Text, nullable=False)
+
+    # Encrypted at rest (see crypto.py)
+    content = Column(EncryptedText, nullable=False)
     created_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),

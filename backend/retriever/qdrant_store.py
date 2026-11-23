@@ -1,7 +1,7 @@
 import os
 import uuid
 from datetime import datetime, timezone
-
+from crypto import encrypt
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient, models
 
@@ -104,7 +104,7 @@ def store_message(
                     "user_id": user_id,
                     "conversation_id": conversation_id,
                     "role": role,
-                    "content": content,
+                    "content": encrypt(content),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             )
