@@ -12,13 +12,17 @@ load_dotenv()
 
 QDRANT_URL = os.getenv("QDRANT_URL")
 
+# Set this when Qdrant runs with an API key (QDRANT__SERVICE__API_KEY on the
+# Qdrant side). Free: it is a built-in setting of the open-source server.
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
+
 if not QDRANT_URL:
     raise ValueError("QDRANT_URL is not configured")
 
 
 COLLECTION_NAME = "chat_messages"
 
-client = QdrantClient(url=QDRANT_URL)
+client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=30)
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -80,10 +84,14 @@ def store_message(
     conversation_id: str,
     role: str,
     content: str,
+    message_id: str | None = None,
 ) -> str:
-    """Generate embeddings and store a chat message in Qdrant."""
+    """Generate embeddings and store a chat message in Qdrant.
 
-    message_id = str(uuid.uuid4())
+    Pass the id the message has in SQLite, so both stores use the same id.
+    """
+
+    message_id = message_id or str(uuid.uuid4())
 
     vectors = embed_messages([content])[0]
 
@@ -112,3 +120,26 @@ def store_message(
     )
 
     return message_id
+
+
+def delete_conversation_points(user_id: str, conversation_id: str) -> None:
+    """Remove every indexed message of one chat. Safe to run twice."""
+
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_id",
+                        match=models.MatchValue(value=user_id),
+                    ),
+                    models.FieldCondition(
+                        key="conversation_id",
+                        match=models.MatchValue(value=conversation_id),
+                    ),
+                ]
+            )
+        ),
+        wait=True,
+    )

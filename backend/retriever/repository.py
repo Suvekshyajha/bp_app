@@ -114,7 +114,15 @@ def load_chat_history(conversation_id: str) -> list[dict]:
     ]
 
 
-def add_message(conversation_id: str, role: str, content: str) -> str:
+def add_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    context: list[dict] | None = None,
+) -> str:
+    """Save a message. `context` is the list of related past messages an
+    answer was written with, kept so the chat can show them again later."""
+
     message_id = str(uuid.uuid4())
 
     with SessionLocal() as db:
@@ -123,10 +131,55 @@ def add_message(conversation_id: str, role: str, content: str) -> str:
             conversation_id=conversation_id,
             role=role,
             content=content,
+            context=json.dumps(context) if context else None,
         ))
         db.commit()
 
     return message_id
+
+
+def conversation_exists(conversation_id: str) -> bool:
+    with SessionLocal() as db:
+        return db.get(Conversation, conversation_id) is not None
+
+
+def delete_conversation(user_id: str, conversation_id: str) -> None:
+    """Delete one of the user's chats and all its messages.
+
+    Raises ConversationNotFound if there is no such chat for this user.
+    (The search index is cleaned separately, see qdrant_store.)
+    """
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+
+        if conversation is None or conversation.user_id != user_id:
+            raise ConversationNotFound(conversation_id)
+
+        # The relationship cascades: the messages go with the chat
+        db.delete(conversation)
+        db.commit()
+
+
+def owns_conversation(user_id: str, conversation_id: str) -> bool:
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+
+        return conversation is not None and conversation.user_id == user_id
+
+
+def parse_context(raw: str | None) -> list[dict]:
+    """The saved related messages of an answer. Bad or missing data gives []."""
+
+    if not raw:
+        return []
+
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+
+    return value if isinstance(value, list) else []
 
 
 # ---------- Reading history ----------
@@ -257,6 +310,7 @@ def list_messages(
                 "role": row.role,
                 "content": row.content,
                 "created_at": row.created_at,
+                "context": parse_context(row.context),
             }
             for row in rows
         ]

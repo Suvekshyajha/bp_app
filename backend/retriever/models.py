@@ -50,6 +50,11 @@ class Message(Base):
 
     # Encrypted at rest (see crypto.py)
     content = Column(EncryptedText, nullable=False)
+
+    # Assistant messages only: the "related past messages" the answer was
+    # written with, as JSON text, encrypted like the content (it contains
+    # message text). NULL for user messages and for older answers.
+    context = Column(EncryptedText, nullable=True)
     created_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),

@@ -39,3 +39,27 @@ SessionLocal = sessionmaker(
 
 class Base(DeclarativeBase):
     pass
+
+
+
+# create_all() makes missing TABLES but never adds a column to a table that
+# already exists. Columns added after the first release are listed here and
+# added to old databases when the service (or a script) starts.
+NEW_COLUMNS = [
+    # (table, column, SQL type)
+    ("messages", "context", "TEXT"),
+]
+
+
+def migrate_schema() -> None:
+    with engine.begin() as connection:
+        for table, column, sql_type in NEW_COLUMNS:
+            existing = {
+                row[1]
+                for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+            }
+
+            if existing and column not in existing:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
+                )

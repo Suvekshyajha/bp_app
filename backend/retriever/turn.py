@@ -84,18 +84,32 @@ def _spawn(coroutine) -> asyncio.Task:
     return task
 
 
-async def _index(user_id: str, conversation_id: str, role: str, content: str) -> None:
+async def _index(
+    user_id: str,
+    conversation_id: str,
+    role: str,
+    content: str,
+    message_id: str,
+) -> None:
     """Add a message to Qdrant. SQLite is the source of truth, so a failure
     here is logged and never shown as a chat error."""
 
     try:
         async with _jobs:
+            # The chat may have been deleted while this waited for its turn:
+            # do not bring its text back into the index.
+            if not await asyncio.to_thread(
+                repository.conversation_exists, conversation_id
+            ):
+                return
+
             await asyncio.to_thread(
                 store_message,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 role=role,
                 content=content,
+                message_id=message_id,
             )
     except Exception:
         logger.exception("Could not index the %s message in Qdrant", role)
@@ -124,20 +138,44 @@ async def _retrieve(
         return []
 
 
+def context_for_storage(results: list[dict]) -> list[dict]:
+    """The related messages in the shape kept with the answer."""
+
+    saved = []
+
+    for item in results:
+        payload = item.get("payload") or {}
+
+        saved.append({
+            "id": item["id"],
+            "score": item["score"],
+            "role": payload.get("role"),
+            "content": payload.get("content", ""),
+            "timestamp": payload.get("timestamp"),
+        })
+
+    return saved
+
+
 async def _save_answer(
     user_id: str,
     conversation_id: str,
     answer: str,
+    results: list[dict],
 ) -> str:
-    """Save the answer, then index it in the background."""
+    """Save the answer (with the context it used), then index it in the background."""
 
     if not answer:
         return ""
 
     message_id = await asyncio.to_thread(
-        repository.add_message, conversation_id, "assistant", answer
+        repository.add_message,
+        conversation_id,
+        "assistant",
+        answer,
+        context_for_storage(results),
     )
-    _spawn(_index(user_id, conversation_id, "assistant", answer))
+    _spawn(_index(user_id, conversation_id, "assistant", answer, message_id))
 
     return message_id
 
@@ -181,7 +219,7 @@ async def run_turn(user_id: str, conversation_id: str, query: str):
     user_message_id = await asyncio.to_thread(
         repository.add_message, conversation_id, "user", query
     )
-    _spawn(_index(user_id, conversation_id, "user", query))
+    _spawn(_index(user_id, conversation_id, "user", query, user_message_id))
 
     # 5. Stream the answer
     parts: list[str] = []
@@ -207,7 +245,7 @@ async def run_turn(user_id: str, conversation_id: str, query: str):
         # interrupt the save.
         if not failed:
             saving = asyncio.ensure_future(
-                _save_answer(user_id, conversation_id, "".join(parts))
+                _save_answer(user_id, conversation_id, "".join(parts), results)
             )
             await asyncio.shield(saving)
 
