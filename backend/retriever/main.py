@@ -2,19 +2,23 @@ import asyncio
 import hmac
 import logging
 import os
-import uuid 
+import uuid
 from contextlib import aclosing
 from datetime import datetime, timezone
+
 import grpc
 import groq
 from google.protobuf.timestamp_pb2 import Timestamp
+
 import chat_pb2
 import chat_pb2_grpc
+
 import repository
 from crypto import check_configured
 from database import Base, engine, migrate_schema
 from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
+from retrieval import strip_hidden_characters
 from service_auth import require_service_token
 from turn import Context, Done, Token, TurnInProgress, run_turn
 
@@ -41,6 +45,10 @@ SERVICE_TOKEN = os.getenv("CHAT_SERVICE_TOKEN") or None
 
 # Development only: start without a token (allowed only on this machine)
 ALLOW_NO_AUTH = os.getenv("CHAT_ALLOW_NO_AUTH", "").lower() == "true"
+
+# Longest question accepted (the website cuts at the same length). Checked
+# here too, because this service must not trust whoever calls it.
+MAX_QUERY_CHARS = int(os.getenv("MAX_QUERY_CHARS", "4000"))
 
 # ---------- Converting between our data and protobuf ----------
 
@@ -169,16 +177,27 @@ def saved_context(items: list[dict]) -> list[dict]:
 class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     async def Chat(self, request, context):
+        # Hidden characters are removed BEFORE the question is saved or sent
+        # to the model, so they can never carry instructions.
+        query = strip_hidden_characters(request.query).strip()
+
         if (
             not request.user_id
             or not request.conversation_id
-            or not request.query.strip()
+            or not query
         ):
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id, conversation_id and query are required",
             )
-                # The idempotency key: the id the browser chose for this question.
+
+        if len(query) > MAX_QUERY_CHARS:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"query must be at most {MAX_QUERY_CHARS} characters",
+            )
+
+        # The idempotency key: the id the browser chose for this question.
         # Same id + same text again = the saved answer is sent back.
         extra = {}
 
@@ -196,7 +215,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 run_turn(
                     request.user_id,
                     request.conversation_id,
-                    request.query.strip(),
+                    query,
                     regenerate=request.regenerate,
                     **extra,
                 )
