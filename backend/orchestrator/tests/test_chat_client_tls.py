@@ -1,8 +1,10 @@
 """chat_client against a real local gRPC server: TLS, token and mutual TLS."""
 
 import asyncio
+import importlib.util
 import datetime
 import ipaddress
+from pathlib import Path
 
 import grpc
 import pytest
@@ -13,7 +15,14 @@ from cryptography.x509.oid import NameOID
 
 import chat_pb2
 import chat_pb2_grpc
-import chat_client
+# Other test files may put a fake "chat_client" into sys.modules. Load the
+# real file under a private name so this test always checks the real code.
+_spec = importlib.util.spec_from_file_location(
+    "chat_client_under_test",
+    Path(__file__).resolve().parent.parent / "chat_client.py",
+)
+chat_client = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(chat_client)
 
 TOKEN = "s3cret-token"
 
