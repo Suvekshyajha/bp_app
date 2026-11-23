@@ -61,9 +61,21 @@ def strip_hidden_characters(text: str) -> str:
 
 
 def clean_for_prompt(text: str) -> str:
-    """Text read from storage, made safe to place inside <past_messages>."""
+    """Text read from storage, made safe to place inside <past_messages>.
 
-    return DELIMITER_TAG.sub("", strip_hidden_characters(text))
+    The cleaning is repeated until the text stops changing. One pass is not
+    enough: removing "</past_messages>" from
+    "</past_mess</past_messages>ages>" leaves a new working tag behind.
+    Every pass only removes characters, so the loop always ends.
+    """
+
+    previous = None
+
+    while previous != text:
+        previous = text
+        text = DELIMITER_TAG.sub("", strip_hidden_characters(text))
+
+    return text
 
 
 def dot(a: list[float], b: list[float]) -> float:

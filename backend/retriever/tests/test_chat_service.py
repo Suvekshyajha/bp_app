@@ -11,7 +11,7 @@ import grpc
 import pytest
 import pytest_asyncio
 
-from backend.retriever.qdrant_store import delete_message_points
+from qdrant_store import delete_message_points
 import chat_pb2
 import chat_pb2_grpc
 
@@ -53,7 +53,7 @@ def _fake_modules():
 
     retrieval = types.ModuleType("retrieval")
     retrieval.retrieve_messages = lambda **kwargs: list(retrieved)
-
+    retrieval.strip_hidden_characters = lambda text: text
     llm = types.ModuleType("llm")
 
     async def stream_response(query, results, history):
