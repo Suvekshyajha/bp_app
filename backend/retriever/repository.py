@@ -125,7 +125,12 @@ def add_message(
     answer was written with, kept so the chat can show them again later.
 
     `message_id` lets the caller choose the id (the browser does this for the
-    questions it sends, so both sides know the same id)."""
+    questions it sends, so both sides know the same id).
+
+    Saving the same id twice into the same chat is safe: the first copy is
+    kept and the id is returned again (this is what makes a repeated request
+    harmless). An id that belongs to a different chat or role is an error.
+    """
 
     message_id = message_id or str(uuid.uuid4())
 
@@ -137,9 +142,85 @@ def add_message(
             content=content,
             context=json.dumps(context) if context else None,
         ))
-        db.commit()
+
+        try:
+            db.commit()
+
+        except IntegrityError:
+            db.rollback()
+            existing = db.get(Message, message_id)
+
+            if (
+                existing is None
+                or existing.conversation_id != conversation_id
+                or existing.role != role
+            ):
+                raise
 
     return message_id
+
+
+def get_turn_state(
+    user_id: str,
+    conversation_id: str,
+    message_id: str,
+) -> dict | None:
+    """What is already saved for a question the browser sent before.
+
+    Returns None if this user message is not in the chat. Otherwise:
+        {"query": the saved question,
+         "answer": {"id", "content", "context"} or None}
+    where "answer" is the assistant message that comes right after it.
+    Raises ConversationNotFound if the chat is not this user's.
+    """
+
+    with SessionLocal() as db:
+        owned = (
+            db.query(Conversation.id)
+            .filter(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+            .first()
+        )
+
+        if not owned:
+            raise ConversationNotFound(conversation_id)
+
+        question = (
+            db.query(Message)
+            .filter(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+                Message.role == "user",
+            )
+            .first()
+        )
+
+        if question is None:
+            return None
+
+        reply = (
+            db.query(Message)
+            .filter(
+                Message.conversation_id == conversation_id,
+                tuple_(Message.created_at, Message.id)
+                > tuple_(question.created_at, question.id),
+            )
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .first()
+        )
+
+        answer = None
+
+        if reply is not None and reply.role == "assistant":
+            answer = {
+                "id": reply.id,
+                "content": reply.content,
+                "context": parse_context(reply.context),
+            }
+
+        return {"query": question.content, "answer": answer}
 
 def message_ids_from(
     user_id: str,
@@ -203,7 +284,7 @@ def delete_messages(conversation_id: str, message_ids: list[str]) -> None:
             Message.id.in_(message_ids),
         ).delete(synchronize_session=False)
         db.commit()
-        
+
 def conversation_exists(conversation_id: str) -> bool:
     with SessionLocal() as db:
         return db.get(Conversation, conversation_id) is not None
