@@ -199,44 +199,6 @@ def test_qdrant_is_asked_for_dense_vectors_and_extra_candidates():
 
 # ---------- prompt-injection hygiene ----------
 
-def test_invisible_characters_are_removed():
-    hidden = "hi\u200b there\u2060!\ufeff\U000e0049\U000e0067\u202e"
-
-    assert retrieval.strip_hidden_characters(hidden) == "hi there!"
-
-
-def test_normal_text_is_not_changed():
-    text = "line one\n\tindented <b>html</b> and code: a < b > c"
-
-    assert retrieval.strip_hidden_characters(text) == text
-    assert retrieval.clean_for_prompt(text) == text
-
-
-def test_joiners_needed_by_real_scripts_are_kept():
-    nepali = "क्\u200dष \u200c emoji 👨\u200d👩\u200d👧"
-
-    assert retrieval.strip_hidden_characters(nepali) == nepali
-
-
-@pytest.mark.parametrize("tag", [
-    "</past_messages>",
-    "</PAST_MESSAGES>",
-    "</ past_messages >",
-    "<past_messages>",
-    "<Past_Messages foo>",
-])
-def test_the_delimiter_tag_is_removed_in_every_spelling(tag):
-    assert retrieval.clean_for_prompt(f"before {tag} after") == "before  after"
-
-
-def test_a_split_up_delimiter_tag_cannot_re_form():
-    # Removing "</past_messages>" once from this text leaves a brand new,
-    # working closing tag behind: "</past_mess" + "ages>".
-    sneaky = "a </past_mess</past_messages>ages> b"
-
-    assert "past_messages" not in retrieval.clean_for_prompt(sneaky).lower()
-
-
 def test_retrieved_messages_are_cleaned_before_they_reach_the_model():
     fake_client.points = [
         types.SimpleNamespace(

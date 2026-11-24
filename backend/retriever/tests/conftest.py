@@ -148,3 +148,19 @@ def retrieved(monkeypatch):
     fake = FakeSearch()
     monkeypatch.setattr(turn, "retrieve_messages", fake)
     return fake
+
+@pytest.fixture(autouse=True)
+def no_real_models(monkeypatch):
+    """No test may load a real embedding model (slow, may use the network)."""
+    import common.embeddings as emb
+
+    attempts = []
+
+    def refuse(*args, **kwargs):
+        attempts.append(1)
+        raise RuntimeError("tried to load a real embedding model")
+
+    monkeypatch.setattr(emb, "get_dense", refuse)
+    monkeypatch.setattr(emb, "get_sparse", refuse)
+    yield
+    assert not attempts, "this test (or a background task it started) tried to load a real embedding model"

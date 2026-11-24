@@ -16,6 +16,7 @@ import chat_pb2_grpc
 import repository
 from crypto import check_configured
 from database import Base, engine, migrate_schema
+from embeddings import warm_up
 from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
 from retrieval import strip_hidden_characters
@@ -404,6 +405,9 @@ async def serve():
     Base.metadata.create_all(bind=engine)
     migrate_schema()
     await asyncio.to_thread(create_collection)
+
+    # Load the embedding models now, so the first chat turn is not slow
+    await asyncio.to_thread(warm_up)
 
     if token:
         server = grpc.aio.server(interceptors=[ServiceTokenInterceptor(token)])
