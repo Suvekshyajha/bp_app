@@ -37,6 +37,9 @@ message ChatRequest {
     // true = the user asked for a NEW answer to this same question.
     // Only meaningful together with user_message_id.
     bool regenerate = 5;
+
+    // Documents to search besides past chat messages. Empty = no document search.
+    repeated string document_ids = 6;
 }
 
 message ChatEvent {
@@ -57,6 +60,13 @@ message RetrievedMessage {
     Role role = 3;
     string content = 4;
     google.protobuf.Timestamp created_at = 5;
+
+    // Set only for document chunks. Empty document_id = a past chat message.
+    string document_id = 6;
+    string filename = 7;
+    int32 chunk_index = 8;
+    string section_title = 9;
+    int32 page = 10;
 }
 
 message Token {
