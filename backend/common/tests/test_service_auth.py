@@ -1,10 +1,10 @@
-"""The chat service refuses to start without a service token."""
+﻿"""The chat service refuses to start without a service token."""
 
 import logging
 
 import pytest
 
-from service_auth import require_service_token
+from common.service_auth import require_service_token
 
 GOOD = "a-long-enough-token-1234"
 

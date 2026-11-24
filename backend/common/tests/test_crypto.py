@@ -1,7 +1,7 @@
-import pytest
+﻿import pytest
 from cryptography.fernet import Fernet
 
-import crypto
+from common import crypto
 
 
 @pytest.fixture
@@ -14,11 +14,11 @@ def keys(monkeypatch):
 
 
 def test_round_trip_and_ciphertext_is_not_the_text():
-    token = crypto.encrypt("hello wörld")
+    token = crypto.encrypt("hello wÃ¶rld")
 
     assert token.startswith(crypto.PREFIX)
     assert "hello" not in token
-    assert crypto.decrypt(token) == "hello wörld"
+    assert crypto.decrypt(token) == "hello wÃ¶rld"
 
 
 def test_same_text_encrypts_differently_each_time():
