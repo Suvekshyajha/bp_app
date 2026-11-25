@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import NullPool
 
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 

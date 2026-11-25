@@ -30,7 +30,7 @@ HIDDEN_CHARACTERS = re.compile(
 )
 
 DELIMITER_TAG = re.compile(
-    r"<\s*/?\s*(?:past_messages|document_excerpts)\b[^>]*>?",
+    r"<\s*/?\s*(?:past_messages|document_excerpts|document_sample|document_outline|document_stats)\b[^>]*>?",
     re.IGNORECASE,
 )
 

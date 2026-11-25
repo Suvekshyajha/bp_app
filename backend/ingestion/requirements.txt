@@ -11,6 +11,7 @@ httpx==0.28.1
 
 # Pin these three with == after you install them:
 #   pip freeze | findstr /i "pypdf python-docx python-multipart groq"
+python-dotenv
 pypdf
 python-docx
 python-multipart

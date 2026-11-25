@@ -5,6 +5,13 @@ The numbers come from the migration plan (sections 6, 15 and 16).
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def _int_env(name: str, default: int) -> int:
@@ -71,3 +78,30 @@ ERR_TOO_LARGE = "too_large"
 ERR_NO_TEXT = "no_text"
 ERR_TIMEOUT = "timeout"
 ERR_TOO_MANY_CHUNKS = "too_many_chunks"
+
+# ---------- Folders ----------
+
+# Uploaded files wait here for the seconds a job runs, then are deleted.
+UPLOAD_DIR = Path(os.getenv("INGEST_UPLOAD_DIR", "").strip() or BASE_DIR / "data" / "uploads")
+
+# ---------- Stage 1: analysis ----------
+
+ANALYSIS_ENABLED = os.getenv("INGEST_ANALYSIS_ENABLED", "true").strip().lower() != "false"
+ANALYSIS_MODEL = os.getenv("INGEST_ANALYSIS_MODEL", "").strip() or "openai/gpt-oss-120b"
+ANALYSIS_TIMEOUT_SECONDS = 30
+ANALYSIS_MAX_TOKENS = 900
+
+# At most this many tokens: skip the LLM and keep the whole text as one chunk (D7)
+SINGLE_CHUNK_SKIP_TOKENS = 300
+# A single_chunk recommendation above this is refused (guard rail)
+SINGLE_CHUNK_MAX_TOKENS = 450
+
+# ---------- Semantic chunking ----------
+
+SEMANTIC_MAX_CHARS = _int_env("INGEST_SEMANTIC_MAX_CHARS", 80000)
+SEMANTIC_MAX_SENTENCES = 2000
+SEMANTIC_PERCENTILE = min(97, max(80, _int_env("INGEST_SEMANTIC_PERCENTILE", 90)))
+
+# ---------- Embedding ----------
+
+EMBED_BATCH_SIZE = 32
