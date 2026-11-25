@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Identity } from "../types";
 import { getHealth } from "../api";
 import { RateLimitError, useChatSocket } from "../hooks/useChatSocket";
 import { useConversations } from "../hooks/useConversations";
 import { useChatMessages } from "../hooks/useChatMessages";
+import { useDocuments } from "../hooks/useDocuments";
 import { Sidebar } from "../components/Sidebar";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
+import { DocumentPanel } from "../components/DocumentPanel";
 
 export function ChatPage({
   identity,
@@ -52,6 +54,36 @@ export function ChatPage({
   } = useChatMessages(selectedId, selectedIsLocal, onLogout);
 
   const { status, send, cancel } = useChatSocket(onLogout);
+
+  const {
+    documents,
+    status: documentStatus,
+    uploading,
+    error: documentError,
+    upload: uploadDocument,
+    remove: removeDocument,
+    refresh: reloadDocuments,
+    dismissError: dismissDocumentError,
+  } = useDocuments(onLogout);
+
+  // The documents the user ticked. Only ready documents count, so a document
+  // that was deleted or is not ready is dropped here without extra bookkeeping.
+  const [pickedDocIds, setPickedDocIds] = useState<readonly string[]>([]);
+
+  const selectedDocIds = useMemo(() => {
+    const ready = new Set(
+      documents.filter((d) => d.status === "ready").map((d) => d.id),
+    );
+    return pickedDocIds.filter((id) => ready.has(id));
+  }, [documents, pickedDocIds]);
+
+  const toggleDocument = useCallback((id: string) => {
+    setPickedDocIds((current) =>
+      current.includes(id)
+        ? current.filter((x) => x !== id)
+        : [...current, id],
+    );
+  }, []);
 
   const [draft, setDraft] = useState("");
 
@@ -168,6 +200,10 @@ export function ChatPage({
             conversation_id: conversationId,
             user_message_id: messageId,
             regenerate,
+            // Left out when nothing is ticked: no document search at all
+            ...(selectedDocIds.length > 0
+              ? { document_ids: [...selectedDocIds] }
+              : {}),
           },
           handleToken,
         );
@@ -227,6 +263,7 @@ export function ChatPage({
       markSending,
       markSynced,
       removeMessage,
+      selectedDocIds,
       send,
       updateMessage,
     ],
@@ -547,6 +584,19 @@ export function ChatPage({
         />
 
         <footer className="composer-area">
+          <DocumentPanel
+            documents={documents}
+            status={documentStatus}
+            selectedIds={selectedDocIds}
+            uploading={uploading}
+            error={documentError}
+            onToggle={toggleDocument}
+            onUpload={(file) => void uploadDocument(file)}
+            onRemove={(id) => void removeDocument(id)}
+            onDismissError={dismissDocumentError}
+            onReload={() => void reloadDocuments()}
+          />
+
           <ChatInput
             value={draft}
             onChange={setDraft}
@@ -556,8 +606,8 @@ export function ChatPage({
           />
 
           <p className="composer-disclaimer">
-            AI can make mistakes. Related past messages are shown as context,
-            not verified facts.
+            AI can make mistakes. Sources are shown as context, not verified
+            facts.
           </p>
         </footer>
       </section>

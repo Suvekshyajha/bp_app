@@ -9,6 +9,12 @@ export interface RetrievedPayload {
   role?: string;
   content?: string;
   timestamp?: string;
+  // Only on an excerpt from an uploaded document (a past chat message has none)
+  document_id?: string;
+  filename?: string;
+  chunk_index?: number;
+  section_title?: string;
+  page?: number;
 }
 
 export interface RetrievedMessage {
@@ -61,6 +67,7 @@ export interface ChatRequest {
   conversation_id?: string;
   user_message_id?: string; // the idempotency key
   regenerate?: boolean; // true = a new answer to the same question
+  document_ids?: string[]; // documents to search besides the chat (max 5)
 }
 
 export interface ChatResponse {
@@ -74,4 +81,32 @@ export interface Identity {
   userId: string;
   displayName: string;
   email: string;
+}
+
+// ---- Documents (backend/orchestrator/documents.py) ----
+export type DocumentStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed"
+  | "deleting";
+
+// What the server sends (snake_case)
+export interface ServerDocument {
+  id: string;
+  filename: string;
+  status: DocumentStatus;
+  error?: string | null; // a short safe code, never a stack trace
+  chunk_count?: number | null;
+  created_at?: string | null;
+}
+
+// What the UI uses
+export interface DocumentInfo {
+  id: string;
+  filename: string;
+  status: DocumentStatus;
+  error?: string;
+  chunkCount?: number;
+  createdAt: string;
 }

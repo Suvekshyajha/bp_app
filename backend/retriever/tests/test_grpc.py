@@ -327,3 +327,108 @@ def test_empty_after_cleaning_or_too_long_is_invalid_argument(session_factory, m
 
     assert run(scenario) == grpc.StatusCode.INVALID_ARGUMENT
     assert model.calls == []
+
+
+# ---------- documents (step 5) ----------
+
+DOC = "11111111-1111-4111-8111-111111111111"
+
+
+def doc_request(document_ids, query="hello"):
+    return chat_pb2.ChatRequest(
+        user_id="alice-id",
+        conversation_id="chat-0001",
+        query=query,
+        document_ids=document_ids,
+    )
+
+
+def failure_of(call):
+    async def scenario():
+        async with running_server() as (chat, _):
+            with pytest.raises(grpc.aio.AioRpcError) as error:
+                async for _ in chat.Chat(call):
+                    pass
+            return error.value
+
+    return run(scenario)
+
+
+def test_a_missing_document_is_not_found(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.states[DOC] = "missing"
+
+    error = failure_of(doc_request([DOC]))
+
+    assert error.code() == grpc.StatusCode.NOT_FOUND
+    assert error.details() == "Document not found."
+    assert model.calls == []
+
+
+def test_a_document_still_processing_is_failed_precondition(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.states[DOC] = "processing"
+
+    error = failure_of(doc_request([DOC]))
+
+    assert error.code() == grpc.StatusCode.FAILED_PRECONDITION
+    assert error.details() == "Document is still being processed."
+    assert model.calls == []
+
+
+@pytest.mark.parametrize("bad", [["not-a-uuid"], [DOC, "123"]])
+def test_document_ids_must_be_uuids(session_factory, model, indexed, retrieved, doc_search, bad):
+    error = failure_of(doc_request(bad))
+
+    assert error.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert doc_search.state_calls == []
+
+
+def test_at_most_five_documents_can_be_searched(session_factory, model, indexed, retrieved, doc_search):
+    import uuid
+
+    ids = [str(uuid.uuid4()) for _ in range(6)]
+
+    error = failure_of(doc_request(ids))
+
+    assert error.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert doc_search.state_calls == []
+
+
+def test_the_same_document_twice_is_searched_once(session_factory, model, indexed, retrieved, doc_search):
+    async def scenario():
+        async with running_server() as (chat, _):
+            return [e async for e in chat.Chat(doc_request([DOC, DOC.upper()]))]
+
+    run(scenario)
+
+    assert doc_search.state_calls == [("alice-id", [DOC])]
+
+
+def test_excerpts_arrive_with_file_name_and_place(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.results = [{
+        "id": "c1",
+        "score": 0.8,
+        "payload": {
+            "document_id": DOC,
+            "filename": "report.pdf",
+            "chunk_index": 2,
+            "section_title": "Results",
+            "page": 3,
+            "content": "Revenue was five.",
+            "role": None,
+            "timestamp": "2026-11-01T10:00:00+00:00",
+        },
+    }]
+
+    async def scenario():
+        async with running_server() as (chat, _):
+            events = [e async for e in chat.Chat(doc_request([DOC]))]
+            await drain_background()
+            return events
+
+    events = run(scenario)
+    excerpt = events[0].context.messages[0]
+
+    assert (excerpt.document_id, excerpt.filename) == (DOC, "report.pdf")
+    assert (excerpt.chunk_index, excerpt.section_title, excerpt.page) == (2, "Results", 3)
+    assert excerpt.content == "Revenue was five."
+    assert events[-1].done.answer == "Hello"

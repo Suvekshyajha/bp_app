@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from history import router as history_router
 import models  # noqa: F401  (registers the tables)
 import chat_client
+import documents
+import ingest_client
 import routes
 import websocket
 from auth import ALLOWED_ORIGINS
@@ -23,6 +25,8 @@ async def lifespan(app: FastAPI):
     yield
     # Close the gRPC channel to the chat service
     await chat_client.close()
+    # ...and the HTTP client to the ingestion service
+    await ingest_client.close()
 
 
 app = FastAPI(title="Chat orchestrator", lifespan=lifespan)
@@ -40,6 +44,9 @@ app.include_router(routes.router, prefix="/api")
 
 # Chat list and message history: /api/conversations ...
 app.include_router(history_router, prefix="/api")
+
+# Documents: /api/documents ...
+app.include_router(documents.router, prefix="/api")
 
 # WebSocket: /ws/chat
 app.include_router(websocket.router)

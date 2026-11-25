@@ -228,3 +228,31 @@ describe("sendChatRequest", () => {
     expect(socket.sent).toEqual([]);
   });
 });
+
+describe("document_ids", () => {
+  it("are sent with the question when documents are ticked", () => {
+    const { socket } = setup();
+    socket.open();
+
+    sendChatRequest(socket as unknown as WebSocket, {
+      query: "what does the report say?",
+      conversation_id: "c1",
+      document_ids: ["d1", "d2"],
+    });
+
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      query: "what does the report say?",
+      conversation_id: "c1",
+      document_ids: ["d1", "d2"],
+    });
+  });
+
+  it("are absent when no document is ticked", () => {
+    const { socket } = setup();
+    socket.open();
+
+    sendChatRequest(socket as unknown as WebSocket, { query: "hi" });
+
+    expect(JSON.parse(socket.sent[0])).not.toHaveProperty("document_ids");
+  });
+});

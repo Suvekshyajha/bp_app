@@ -20,6 +20,10 @@ fake_embeddings.embed_query = lambda text: {
     "dense": [1.0, 0.0],
     "sparse": {"indices": [1], "values": [1.0]},
 }
+_saved_modules = {
+    name: sys.modules.get(name) for name in ("embeddings", "qdrant_store", "retrieval")
+}
+sys.modules.pop("retrieval", None)  # import it again, against the fakes below
 sys.modules["embeddings"] = fake_embeddings
 
 
@@ -40,6 +44,13 @@ fake_store.COLLECTION_NAME = "chat_messages"
 sys.modules["qdrant_store"] = fake_store
 
 import retrieval  # noqa: E402
+
+# The fakes are for THIS file only: put the real modules back
+for _name, _module in _saved_modules.items():
+    if _module is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _module
 
 
 def point(point_id, similarity, fusion_score=0.03):

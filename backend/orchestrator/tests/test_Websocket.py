@@ -6,7 +6,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import auth
 import websocket
-from conftest import login
+from conftest import ChatServiceError, login
 from models import UserSession
 from rate_limit import SlidingWindowRateLimiter
 
@@ -266,3 +266,106 @@ def test_chat_service_saying_not_found_is_reported_to_the_browser(logged_in, fak
         reply = ws.receive_json()
 
     assert reply["error"] == "Conversation not found."
+
+
+# ---------- documents (step 6) ----------
+
+DOC1 = "11111111-1111-4111-8111-111111111111"
+DOC2 = "22222222-2222-4222-8222-222222222222"
+
+
+def ask_with(ws, document_ids):
+    message = {"query": "what was revenue", "conversation_id": CHAT}
+    if document_ids is not _MISSING:
+        message["document_ids"] = document_ids
+    ws.send_json(message)
+    return receive_until_done(ws)
+
+
+_MISSING = object()
+
+
+def test_document_ids_are_cleaned_and_passed_to_the_chat_service(logged_in, fake_service):
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        received = ask_with(ws, [DOC1.upper(), DOC2, DOC1])
+
+    assert received[-1]["type"] == "done"
+    assert fake_service.chat_options[0]["document_ids"] == [DOC1, DOC2]  # canonical, no duplicates
+
+
+def test_no_document_ids_means_none_are_sent(logged_in, fake_service):
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        ask_with(ws, _MISSING)
+        ask_with(ws, [])
+
+    assert [o["document_ids"] for o in fake_service.chat_options] == [[], []]
+
+
+def test_five_documents_are_allowed(logged_in, fake_service):
+    ids = [f"{i}1111111-1111-4111-8111-111111111111" for i in range(5)]
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        assert ask_with(ws, ids)[-1]["type"] == "done"
+
+    assert fake_service.chat_options[0]["document_ids"] == ids
+
+
+def test_duplicates_do_not_count_toward_the_limit(logged_in, fake_service):
+    ids = [f"{i}1111111-1111-4111-8111-111111111111" for i in range(5)]
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        assert ask_with(ws, ids + ids[:1])[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-list",
+    {"id": DOC1},
+    [123],
+    [None],
+    ["nope"],
+    [DOC1, "nope"],
+    [f"{i}1111111-1111-4111-8111-111111111111" for i in range(6)],  # six different ones
+    [DOC1] * 51,
+])
+def test_invalid_document_ids_are_rejected_and_never_reach_the_chat_service(logged_in, fake_service, bad):
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        received = ask_with(ws, bad)
+
+    assert received == [{"error": "Invalid document id.", "conversation_id": CHAT}]
+    assert fake_service.calls == []
+
+
+def test_the_socket_stays_usable_after_an_invalid_document_id(logged_in, fake_service):
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        ask_with(ws, ["nope"])
+        assert ask_with(ws, [DOC1])[-1]["type"] == "done"
+
+
+def test_a_document_still_processing_gets_its_own_message(logged_in, fake_service):
+    fake_service.error = ChatServiceError(
+        grpc.StatusCode.FAILED_PRECONDITION, "Document is still being processed."
+    )
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        received = ask_with(ws, [DOC1])
+
+    assert received[-1]["error"] == "A selected document is still being processed. Try again in a moment."
+    assert received[-1]["conversation_id"] == CHAT
+
+
+def test_a_missing_document_is_not_reported_as_a_missing_chat(logged_in, fake_service):
+    fake_service.error = ChatServiceError(grpc.StatusCode.NOT_FOUND, "Document not found.")
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        received = ask_with(ws, [DOC1])
+
+    assert received[-1]["error"] == "A selected document was not found."
+
+
+def test_a_missing_chat_still_says_conversation_not_found(logged_in, fake_service):
+    fake_service.error = ChatServiceError(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
+
+    with logged_in.websocket_connect("/ws/chat") as ws:
+        received = ask_with(ws, [DOC1])
+
+    assert received[-1]["error"] == "Conversation not found."

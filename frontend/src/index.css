@@ -225,3 +225,32 @@ button:disabled { cursor: not-allowed; opacity: .52; }
 .edit-save { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
 .edit-save:hover:not(:disabled) { background: var(--accent-dark); }
 .edit-save:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---- Documents ---- */
+.doc-panel { width: min(820px, 100%); margin: 0 auto 8px; color: #777687; font-size: 11px; }
+.doc-panel summary { width: fit-content; cursor: pointer; color: #625e7d; font-weight: 600; list-style-position: inside; }
+.doc-panel summary:hover { color: var(--accent-dark); }
+.doc-panel summary span { color: #a2a1b0; font-weight: 400; }
+.doc-panel summary .doc-selected-count { margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-dark); font-size: 10px; font-weight: 600; }
+.doc-body { display: grid; gap: 8px; margin-top: 8px; padding: 10px 12px; border: 1px solid #efedf5; border-radius: 10px; background: #fbfbfd; }
+.doc-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.doc-upload-button { padding: 6px 11px; border: 1px solid #d9d6f5; border-radius: 8px; background: #fff; color: var(--accent-dark); cursor: pointer; font-size: 11px; font-weight: 700; }
+.doc-upload-button:hover:not(:disabled) { background: var(--accent-soft); }
+.doc-hint { margin: 0; color: #a2a1b0; font-size: 10px; }
+.doc-error { margin: 0; padding: 7px 10px; border: 1px solid #f0d6d6; border-radius: 8px; background: #fff9f9; color: #a04343; font-size: 11px; }
+.doc-link { padding: 0; border: 0; background: none; color: inherit; cursor: pointer; font-size: inherit; text-decoration: underline; }
+.doc-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; max-height: 190px; overflow-y: auto; }
+.doc-item { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid #efedf5; border-radius: 8px; background: #fff; }
+.doc-check { display: grid; place-items: center; }
+.doc-info { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.doc-name { max-width: 100%; overflow: hidden; color: #303044; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.doc-badge { padding: 1px 8px; border-radius: 999px; background: #eeeef4; color: #6f6c83; font-size: 9px; font-weight: 700; }
+.doc-badge.is-ready { background: #e4f4ec; color: var(--green); }
+.doc-badge.is-pending, .doc-badge.is-processing { background: #fff3da; color: #9a6a10; }
+.doc-badge.is-failed { background: #fbe6e6; color: var(--red); }
+.doc-failure { flex-basis: 100%; color: var(--red); font-size: 10px; }
+.doc-delete { width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: #a2a1b0; cursor: pointer; font-size: 15px; line-height: 1; }
+.doc-delete:hover:not(:disabled) { background: #fbe6e6; color: var(--red); }
+.context-item.is-document { border-color: #dedaf7; background: #faf9ff; }
+.context-item.is-document .context-item-meta span { color: #858496; font-style: italic; }
+@media (max-width: 760px) { .doc-panel { margin-bottom: 6px; } }

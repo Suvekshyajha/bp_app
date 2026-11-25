@@ -27,7 +27,7 @@ PROMPT_BUDGET_CHARS = int(os.getenv("PROMPT_BUDGET_CHARS", "24000"))
 # The most characters of document excerpts that go into one prompt. Excerpts
 # are taken in rank order (best first). The history gets what is left of
 # PROMPT_BUDGET_CHARS after the excerpts.
-DOC_BUDGET_CHARS = int(os.getenv("DOC_BUDGET_CHARS", "10000"))
+DOC_BUDGET_CHARS = int(os.getenv("DOC_BUDGET_CHARS", "12000"))
 
 SYSTEM_PROMPT = (
     "You are a helpful conversational assistant.\n\n"

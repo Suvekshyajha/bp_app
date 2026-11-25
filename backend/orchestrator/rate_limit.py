@@ -99,3 +99,15 @@ chat_limiter = SlidingWindowRateLimiter(
     max_events=CHAT_RATE_LIMIT_MESSAGES,
     window_seconds=CHAT_RATE_LIMIT_WINDOW_SECONDS,
 )
+
+
+# Document uploads: this many per user in any window of this many seconds
+DOC_UPLOAD_RATE_LIMIT = int(os.getenv("DOC_UPLOAD_RATE_LIMIT", "5"))
+DOC_UPLOAD_RATE_LIMIT_WINDOW_SECONDS = float(
+    os.getenv("DOC_UPLOAD_RATE_LIMIT_WINDOW_SECONDS", "60")
+)
+
+doc_upload_limiter = SlidingWindowRateLimiter(
+    max_events=DOC_UPLOAD_RATE_LIMIT,
+    window_seconds=DOC_UPLOAD_RATE_LIMIT_WINDOW_SECONDS,
+)

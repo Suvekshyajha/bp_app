@@ -77,8 +77,13 @@ class FakeModel:
         self.calls = []
         self.closed = False
 
-    async def stream(self, query, context, history=None):
-        self.calls.append({"query": query, "context": context, "history": history})
+    async def stream(self, query, context, history=None, documents=None):
+        self.calls.append({
+            "query": query,
+            "context": context,
+            "history": history,
+            "documents": documents,
+        })
         self.closed = False
 
         try:
@@ -164,3 +169,59 @@ def no_real_models(monkeypatch):
     monkeypatch.setattr(emb, "get_sparse", refuse)
     yield
     assert not attempts, "this test (or a background task it started) tried to load a real embedding model"
+
+
+# ---------------------------------------------------------------------------
+# Document search fakes (step 5). `turn` talks to doc_retrieval and to
+# embed_query; both are replaced here, so no test needs Qdrant or a model.
+# ---------------------------------------------------------------------------
+
+DOC_VECTORS = {"dense": [1.0, 0.0], "sparse": {"indices": [1], "values": [1.0]}}
+
+
+class FakeDocSearch:
+    """Stands in for doc_retrieval and embed_query.
+
+    states        document id -> "ready" / "processing" / "missing"
+                  (an id that is not listed is "ready")
+    results       the excerpts the search returns
+    error         if set, the excerpt search raises it
+    calls         the keyword arguments of every excerpt search
+    state_calls   (user_id, document_ids) of every status check
+    embeds        the text of every question that was embedded
+    """
+
+    def __init__(self):
+        self.states = {}
+        self.results = []
+        self.error = None
+        self.calls = []
+        self.state_calls = []
+        self.embeds = []
+
+    def embed_query(self, text):
+        self.embeds.append(text)
+        return DOC_VECTORS
+
+    def document_states(self, user_id, document_ids):
+        self.state_calls.append((user_id, list(document_ids)))
+        return {d: self.states.get(d, "ready") for d in document_ids}
+
+    def retrieve_document_chunks(self, **kwargs):
+        self.calls.append(kwargs)
+
+        if self.error:
+            raise self.error
+
+        return list(self.results)
+
+
+@pytest.fixture
+def doc_search(monkeypatch):
+    import turn
+
+    fake = FakeDocSearch()
+    monkeypatch.setattr(turn, "embed_query", fake.embed_query)
+    monkeypatch.setattr(turn.doc_retrieval, "document_states", fake.document_states)
+    monkeypatch.setattr(turn.doc_retrieval, "retrieve_document_chunks", fake.retrieve_document_chunks)
+    return fake

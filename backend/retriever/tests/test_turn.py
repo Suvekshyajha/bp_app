@@ -373,3 +373,165 @@ def test_the_claim_is_released_even_when_the_turn_fails(session_factory, model, 
         asyncio.run(collect_with_id())
 
     assert turn._running == {}
+
+
+# ---------- documents (step 5) ----------
+
+import uuid
+
+DOC = "11111111-1111-4111-8111-111111111111"
+OTHER_DOC = "22222222-2222-4222-8222-222222222222"
+
+
+def doc_hit(id="c1", content="Revenue was five."):
+    return {
+        "id": id,
+        "score": 0.8,
+        "payload": {
+            "document_id": DOC,
+            "filename": "report.pdf",
+            "chunk_index": 2,
+            "section_title": "Results",
+            "page": 3,
+            "content": content,
+            "role": None,
+            "timestamp": "2026-11-01T10:00:00+00:00",
+        },
+    }
+
+
+async def collect_docs(document_ids, user_id=ALICE, query="hello", **kwargs):
+    return [
+        event
+        async for event in run_turn(user_id, CHAT, query, document_ids=document_ids, **kwargs)
+    ]
+
+
+def test_a_document_that_is_still_processing_saves_nothing(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.states[DOC] = "processing"
+
+    with pytest.raises(turn.DocumentNotReady):
+        asyncio.run(collect_docs([DOC]))
+
+    assert saved_messages(db) == []
+    assert model.calls == []
+    assert indexed == []
+
+
+def test_a_missing_or_foreign_document_saves_nothing(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.states[DOC] = "missing"  # what doc_retrieval says for another user's document
+
+    with pytest.raises(turn.DocumentNotFound):
+        asyncio.run(collect_docs([DOC]))
+
+    assert saved_messages(db) == []
+    assert model.calls == []
+    assert doc_search.calls == []
+
+
+def test_a_missing_document_wins_over_a_processing_one(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.states = {DOC: "processing", OTHER_DOC: "missing"}
+
+    with pytest.raises(turn.DocumentNotFound):
+        asyncio.run(collect_docs([DOC, OTHER_DOC]))
+
+
+def test_the_failed_message_can_be_sent_again_when_the_document_is_ready(session_factory, db, model, indexed, retrieved, doc_search):
+    question = str(uuid.uuid4())
+    doc_search.states[DOC] = "processing"
+
+    with pytest.raises(turn.DocumentNotReady):
+        asyncio.run(collect_docs([DOC], user_message_id=question))
+
+    doc_search.states[DOC] = "ready"
+    events = asyncio.run(collect_docs([DOC], user_message_id=question))
+
+    assert events[-1].answer == "Hello"
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+
+
+def test_the_checks_and_the_search_use_the_callers_user_id(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.results = [doc_hit()]
+
+    asyncio.run(collect_docs([DOC]))
+
+    assert doc_search.state_calls == [(ALICE, [DOC])]
+    assert doc_search.calls[0]["user_id"] == ALICE
+    assert doc_search.calls[0]["document_ids"] == [DOC]
+    assert doc_search.calls[0]["limit"] == turn.DOCUMENT_CONTEXT_LIMIT
+
+
+def test_excerpts_reach_the_model_apart_from_the_chat_context(session_factory, model, indexed, retrieved, doc_search):
+    retrieved.results = [hit("user", "old topic", "old")]
+    doc_search.results = [doc_hit()]
+
+    events = asyncio.run(collect_docs([DOC]))
+
+    call = model.calls[0]
+    assert [r["id"] for r in call["context"]] == ["old"]
+    assert [r["id"] for r in call["documents"]] == ["c1"]
+    assert [r["id"] for r in events[0].results] == ["old", "c1"]
+
+
+def test_without_documents_nothing_is_searched_or_embedded(session_factory, model, indexed, retrieved, doc_search):
+    asyncio.run(collect())
+
+    assert doc_search.state_calls == []
+    assert doc_search.calls == []
+    assert doc_search.embeds == []
+    assert model.calls[0]["documents"] is None
+    assert "vectors" not in retrieved.calls[0]
+
+
+def test_chat_search_and_document_search_share_one_query_embedding(session_factory, model, indexed, retrieved, doc_search):
+    asyncio.run(collect_docs([DOC]))
+
+    assert doc_search.embeds == ["hello"]
+    assert retrieved.calls[0]["vectors"] is doc_search.calls[0]["query_vectors"]
+
+
+def test_a_failing_document_search_still_gives_an_answer(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.error = RuntimeError("qdrant down")
+
+    events = asyncio.run(collect_docs([DOC]))
+
+    assert events[-1].answer == "Hello"
+    assert model.calls[0]["documents"] is None
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+
+
+def test_citations_are_saved_with_the_answer_and_come_back_on_replay(session_factory, db, model, indexed, retrieved, doc_search):
+    question = str(uuid.uuid4())
+    doc_search.results = [doc_hit()]
+
+    async def scenario():
+        first = await collect_docs([DOC], user_message_id=question)
+        await drain_background()
+        again = await collect_docs([DOC], user_message_id=question)
+        return first, again
+
+    first, again = asyncio.run(scenario())
+
+    assert len(model.calls) == 1  # the second request is a replay: no new answer
+    assert len(doc_search.calls) == 1
+
+    replayed = again[0].results[0]["payload"]
+    assert replayed["document_id"] == DOC
+    assert replayed["filename"] == "report.pdf"
+    assert replayed["chunk_index"] == 2
+    assert replayed["section_title"] == "Results"
+    assert replayed["page"] == 3
+    assert again[-1].answer == first[-1].answer
+
+
+def test_context_for_storage_keeps_document_fields_only_for_excerpts():
+    saved = turn.context_for_storage([hit("user", "old", "m"), doc_hit()])
+
+    assert "document_id" not in saved[0]
+    assert {key: saved[1][key] for key in turn.DOC_FIELDS} == {
+        "document_id": DOC,
+        "filename": "report.pdf",
+        "chunk_index": 2,
+        "section_title": "Results",
+        "page": 3,
+    }
