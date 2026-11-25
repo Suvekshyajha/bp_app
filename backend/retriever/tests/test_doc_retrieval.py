@@ -316,6 +316,93 @@ def test_unrelated_questions_find_nothing_in_the_whole_library(qdrant):
     assert doc_retrieval.retrieve_document_chunks(QUERY, ALICE, None) == []
 
 
+# ---------- the threshold depends on whether the user chose the documents ----------
+
+def at(similarity):
+    """A stored vector whose cosine similarity with QUERY is `similarity`."""
+
+    return [similarity, (1 - similarity**2) ** 0.5]
+
+
+@pytest.fixture
+def thresholds(monkeypatch):
+    monkeypatch.setattr(doc_retrieval, "MIN_SIMILARITY", 0.5)
+    monkeypatch.setattr(doc_retrieval, "SELECTED_MIN_SIMILARITY", 0.2)
+
+
+def test_a_chosen_document_keeps_chunks_below_the_global_threshold(qdrant, thresholds):
+    qdrant([chunk("weak", vector=at(0.35)), chunk("strong", vector=at(0.9))])
+
+    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A])
+
+    assert {r["id"] for r in results} == {"weak", "strong"}
+
+
+def test_the_same_weak_chunk_is_refused_when_nothing_is_chosen(qdrant, thresholds):
+    qdrant([chunk("weak", vector=at(0.35)), chunk("strong", vector=at(0.9))])
+
+    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, None)
+
+    assert [r["id"] for r in results] == ["strong"]
+
+
+def test_a_chosen_document_still_drops_chunks_far_below_the_floor(qdrant, thresholds):
+    qdrant([chunk("off", vector=at(0.05)), chunk("weak", vector=at(0.35))])
+
+    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A])
+
+    assert [r["id"] for r in results] == ["weak"]
+
+
+def test_a_chosen_document_is_not_returned_whole(qdrant, thresholds):
+    qdrant([chunk(f"p{i}", index=i, vector=at(0.35)) for i in range(12)])
+
+    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A], limit=4)
+
+    first_pass = [r for r in results if r["score"] >= 0.2]
+    assert len(first_pass) <= 4 + 2 * doc_retrieval.NEIGHBOR_HITS * doc_retrieval.NEIGHBOR_RADIUS
+    assert len(results) < 12
+
+
+def test_several_chosen_documents_get_the_relaxed_threshold_too(qdrant, thresholds):
+    qdrant([chunk("a", vector=at(0.35)), chunk("b", document=DOC_B, vector=at(0.35))])
+
+    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A, DOC_B])
+
+    assert {r["id"] for r in results} == {"a", "b"}
+
+
+def test_an_empty_selection_is_not_a_relaxed_search(qdrant, thresholds):
+    qdrant([chunk("weak", vector=at(0.35))])
+
+    assert doc_retrieval.retrieve_document_chunks(QUERY, ALICE, []) == []
+
+
+def test_the_relaxed_threshold_is_never_stricter_than_the_global_one(monkeypatch):
+    monkeypatch.setattr(doc_retrieval, "MIN_SIMILARITY", 0.3)
+    monkeypatch.setattr(doc_retrieval, "SELECTED_MIN_SIMILARITY", 0.8)
+
+    assert doc_retrieval.effective_threshold([DOC_A]) == 0.3
+    assert doc_retrieval.effective_threshold(None) == 0.3
+
+
+def test_an_explicit_min_similarity_beats_both_defaults(thresholds):
+    assert doc_retrieval.effective_threshold([DOC_A], 0.9) == 0.9
+    assert doc_retrieval.effective_threshold(None, 0.1) == 0.1
+
+
+def test_the_relaxed_threshold_does_not_widen_the_filter(qdrant, thresholds):
+    fake = qdrant([chunk("weak", vector=at(0.35))])
+
+    doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A])
+
+    call = fake.queries[0]
+    expected = {"user_id": ALICE, "document_id": [DOC_A], "status": "ready"}
+
+    assert keys_of(call["query_filter"]) == expected
+    assert [keys_of(p.filter) for p in call["prefetch"]] == [expected, expected]
+
+
 # ---------- spread over documents ----------
 
 def test_one_document_cannot_crowd_the_others_out(qdrant):

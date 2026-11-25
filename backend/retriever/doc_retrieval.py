@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 # reach to be returned. Tune it from the "Document retrieval:" log line.
 MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.5"))
 
+# The threshold used when the user CHOSE the documents (document_ids is a
+# list). The scope is already known then, so a chunk is not refused only
+# because its dense similarity is below the global threshold above: a
+# question worded very differently from the text, or a keyword match with a
+# weak dense score, still reaches the model. It is NOT "return everything":
+# the chunks are still ranked by the hybrid search and cut to `limit`, and
+# only chunks that point away from the question (similarity below this
+# floor) are dropped. The effective value is never higher than
+# MIN_SIMILARITY. Set it to MIN_SIMILARITY (or higher) to switch this off.
+SELECTED_MIN_SIMILARITY = float(os.getenv("RETRIEVAL_SELECTED_MIN_SIMILARITY", "0.2"))
+
 # Search this many times `limit` candidates, so dropping weak ones still
 # leaves enough good ones.
 CANDIDATE_FACTOR = 3
@@ -126,6 +137,28 @@ def document_states(user_id: str, document_ids: list[str]) -> dict[str, str]:
             states[document_id] = MISSING
 
     return states
+
+
+def effective_threshold(
+    document_ids: list[str] | None,
+    min_similarity: float | None = None,
+) -> float:
+    """The dense similarity a chunk must reach, for this kind of search.
+
+      - an explicit `min_similarity` always wins (callers and tests);
+      - documents the user chose: the relaxed SELECTED_MIN_SIMILARITY, but
+        never stricter than the global one;
+      - no documents chosen (whole library): the global MIN_SIMILARITY, so a
+        question no document covers still finds nothing.
+    """
+
+    if min_similarity is not None:
+        return min_similarity
+
+    if document_ids:  # a non-empty list: the user chose these documents
+        return min(MIN_SIMILARITY, SELECTED_MIN_SIMILARITY)
+
+    return MIN_SIMILARITY
 
 
 def _dot(a: list[float], b: list[float]) -> float:
@@ -288,7 +321,12 @@ def retrieve_document_chunks(
     How the result is built:
 
       1. Hybrid search (dense + keyword, fused), then every chunk whose dense
-         similarity is below the threshold is dropped.
+         similarity is below the threshold is dropped. The threshold is the
+         global MIN_SIMILARITY for the whole library, and the lower
+         SELECTED_MIN_SIMILARITY when the user chose the documents (see
+         effective_threshold). Chosen documents are still ranked and cut to
+         `limit`: the lower threshold only stops weak-but-ranked chunks of a
+         document the user asked about from being thrown away.
       2. When more than one document is searched, no document may take more
          than MAX_PER_DOCUMENT of the `limit` places (leftover places are
          given back). At most `limit` chunks are chosen this way.
@@ -310,7 +348,7 @@ def retrieve_document_chunks(
         return []
 
     search_all = document_ids is None
-    threshold = MIN_SIMILARITY if min_similarity is None else min_similarity
+    threshold = effective_threshold(document_ids, min_similarity)
     factor = ALL_DOCUMENTS_CANDIDATE_FACTOR if search_all else CANDIDATE_FACTOR
     candidates = limit * factor
 

@@ -243,3 +243,70 @@ def test_a_question_that_touches_two_documents_uses_both(engine):
     )
 
     assert {DOC_COOKING, DOC_FINANCE} <= documents_of(results)
+
+
+# ---------- choosing a document relaxes the threshold, and only for that ----------
+
+@pytest.fixture
+def thresholds(monkeypatch):
+    monkeypatch.setattr(doc_retrieval, "MIN_SIMILARITY", 0.5)
+    monkeypatch.setattr(doc_retrieval, "SELECTED_MIN_SIMILARITY", 0.2)
+
+
+def test_a_loosely_worded_question_finds_nothing_without_a_chosen_document(engine, thresholds):
+    # about 0.29 similar to every topic: under 0.5, so nothing is guessed
+    assert doc_retrieval.retrieve_document_chunks(question(UNRELATED, 99), ALICE, None) == []
+
+
+def test_the_same_question_finds_text_in_the_chosen_document(engine, thresholds):
+    results = doc_retrieval.retrieve_document_chunks(
+        question(UNRELATED, 99), ALICE, [DOC_CONTEXT]
+    )
+
+    assert results, "the chosen document was not searched with the relaxed threshold"
+    assert documents_of(results) == {DOC_CONTEXT}
+
+
+def test_the_chosen_document_is_the_whole_scope(engine, thresholds):
+    """Other documents are not searched, even if they are the better match."""
+
+    results = doc_retrieval.retrieve_document_chunks(
+        question(FINANCE, 30), ALICE, [DOC_COOKING]
+    )
+
+    assert documents_of(results) <= {DOC_COOKING}
+
+
+def test_a_chosen_document_is_not_dumped_whole(engine, thresholds):
+    results = doc_retrieval.retrieve_document_chunks(
+        question(UNRELATED, 99), ALICE, [DOC_CONTEXT], limit=1
+    )
+
+    # Document_B has 5 chunks: 1 hit plus its neighbours, never all of them
+    assert 0 < len(results) < 5
+
+
+def test_the_relaxed_threshold_never_reaches_another_users_documents(engine, thresholds):
+    for chosen in ([DOC_BOBS], [DOC_BOBS, DOC_CONTEXT]):
+        results = doc_retrieval.retrieve_document_chunks(
+            question(UNRELATED, 99), ALICE, chosen
+        )
+
+        assert DOC_BOBS not in documents_of(results)
+        assert not any("Bob" in r["payload"]["content"] for r in results)
+
+
+def test_a_chosen_document_that_is_still_processing_is_not_searched(engine, thresholds):
+    from qdrant_client import models as m
+
+    engine.set_payload(
+        collection_name=CHUNKS_COLLECTION,
+        payload={"status": "processing"},
+        points=m.Filter(
+            must=[m.FieldCondition(key="document_id", match=m.MatchValue(value=DOC_CONTEXT))]
+        ),
+    )
+
+    assert doc_retrieval.retrieve_document_chunks(
+        question(UNRELATED, 99), ALICE, [DOC_CONTEXT]
+    ) == []
