@@ -39,6 +39,11 @@ SELECTED_MIN_SIMILARITY = float(os.getenv("RETRIEVAL_SELECTED_MIN_SIMILARITY", "
 # leaves enough good ones.
 CANDIDATE_FACTOR = 3
 
+# When the user chose the documents and together they have at most this many
+# chunks (4 = "fewer than 5"), the model gets ALL of them in reading order
+# instead of a search result. A tiny document has nothing to rank.
+SMALL_SELECTION_CHUNKS = int(os.getenv("RETRIEVAL_SMALL_SELECTION_CHUNKS", "4"))
+
 # When the whole library is searched the candidates come from many documents
 # and one document can fill most of them, so look at more of them.
 ALL_DOCUMENTS_CANDIDATE_FACTOR = 5
@@ -294,6 +299,49 @@ def _neighbours(user_id: str, hits: list, taken: set) -> list:
     return found
 
 
+def _whole_selection(
+    user_id: str,
+    document_ids: list[str],
+    dense_vector: list[float],
+) -> list[dict] | None:
+    """Every chunk of the chosen documents, or None when there are too many.
+
+    Same filter as every other read here (user id + document ids + ready), so
+    nothing of another user can come back. Chunks are returned in reading
+    order: by document, then by chunk number.
+    """
+
+    query_filter = build_filter(user_id, document_ids, ready_only=True)
+
+    if _count(query_filter) > SMALL_SELECTION_CHUNKS:
+        return None
+
+    points, _offset = client.scroll(
+        collection_name=CHUNKS_COLLECTION,
+        scroll_filter=query_filter,
+        limit=SMALL_SELECTION_CHUNKS,
+        with_payload=True,
+        with_vectors=["dense"],  # needed to measure the similarity
+    )
+
+    points = sorted(
+        points,
+        key=lambda p: (
+            (p.payload or {}).get("document_id", ""),
+            (p.payload or {}).get("chunk_index", 0),
+        ),
+    )
+
+    items = []
+
+    for point in points:
+        stored = _dense_vector_of(point)
+        similarity = _dot(dense_vector, stored) if stored else 0.0
+        items.append(_result_item(point, similarity))
+
+    return items
+
+
 def retrieve_document_chunks(
     query_vectors: dict,
     user_id: str,
@@ -349,10 +397,32 @@ def retrieve_document_chunks(
 
     search_all = document_ids is None
     threshold = effective_threshold(document_ids, min_similarity)
+
+    # The user chose the documents, so the scope is already known: no chunk is
+    # refused for a low similarity. Only a whole-library search (nothing
+    # chosen), or a caller that passes min_similarity itself, is checked.
+    check_similarity = search_all or min_similarity is not None
     factor = ALL_DOCUMENTS_CANDIDATE_FACTOR if search_all else CANDIDATE_FACTOR
     candidates = limit * factor
 
     dense_vector = query_vectors["dense"]
+
+    # The user chose the documents and they are small: give the model all of
+    # it. A failure here is not fatal, the normal search below still runs.
+    if document_ids and min_similarity is None:
+        try:
+            whole = _whole_selection(user_id, list(document_ids), dense_vector)
+        except Exception:
+            logger.exception("Could not read the whole selection; searching instead")
+            whole = None
+
+        if whole:
+            logger.info(
+                "Document retrieval (chosen documents): small selection, "
+                "returned all %d chunk(s)",
+                len(whole),
+            )
+            return whole
     sparse_vector = models.SparseVector(
         indices=query_vectors["sparse"]["indices"],
         values=query_vectors["sparse"]["values"],
@@ -390,7 +460,7 @@ def retrieve_document_chunks(
         stored = _dense_vector_of(point)
         similarity = _dot(dense_vector, stored) if stored else 0.0
 
-        if similarity < threshold:
+        if check_similarity and similarity < threshold:
             dropped.append(similarity)
             continue
 

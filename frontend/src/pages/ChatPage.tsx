@@ -11,7 +11,6 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
 import { DocumentPanel } from "../components/DocumentPanel";
-import { Toasts } from "../components/toasts";
 import { STATUS_LABELS, isBusy } from "../components/documentStatus";
 import { ACCEPTED_EXTENSIONS } from "../services/documentLimits";
 
@@ -62,14 +61,11 @@ export function ChatPage({
     documents,
     status: documentStatus,
     uploading,
-    uploadingNames,
     error: documentError,
-    notices,
     upload: uploadDocument,
     remove: removeDocument,
     refresh: reloadDocuments,
     dismissError: dismissDocumentError,
-    dismissNotice,
   } = useDocuments(onLogout);
 
   // The documents the user ticked. Only ready documents count, so a document
@@ -339,6 +335,8 @@ export function ChatPage({
 
       touchConversation(conversationId, query);
       setDraft("");
+      // The documents popover has done its job once the question is sent
+      setDocsOpen(false);
 
       void sendExistingMessage(query, messageId, conversationId);
     },
@@ -517,9 +515,7 @@ export function ChatPage({
         {uploading && (
           <span className="doc-chip is-busy">
             <span className="doc-spinner" aria-hidden="true" />
-            <span className="doc-chip-name">
-              {"Uploading " + uploadingNames.join(", ") + "…"}
-            </span>
+            <span className="doc-chip-name">Uploading…</span>
           </span>
         )}
 
@@ -802,7 +798,6 @@ export function ChatPage({
           </p>
         </footer>
       </section>
-      <Toasts notices={notices} onDismiss={dismissNotice} />
     </main>
   );
 }

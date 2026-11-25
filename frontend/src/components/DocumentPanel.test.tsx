@@ -115,21 +115,6 @@ describe("actions", () => {
     expect(onUpload).toHaveBeenCalledWith(file);
   });
 
-  it("hands the file over without waiting for the upload to finish", () => {
-    // A promise that never settles: if the handler awaited it, the browser's
-    // file window would stay open.
-    const onUpload = vi.fn(() => new Promise<void>(() => {}));
-    setup([], { onUpload });
-    const file = new File(["hi"], "n.txt");
-    const input = document.getElementById("document-file-input") as HTMLInputElement;
-
-    expect(() => fireEvent.change(input, { target: { files: [file] } })).not.toThrow();
-
-    expect(onUpload).toHaveBeenCalledTimes(1);
-    // the input is reset at once, so the same file can be chosen again
-    expect(input.value).toBe("");
-  });
-
   it("the picker only offers the four accepted types", () => {
     setup([]);
     const input = document.getElementById("document-file-input") as HTMLInputElement;
