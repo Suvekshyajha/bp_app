@@ -8,9 +8,12 @@ checked out, which is why the port must stay on an internal network.
 
 import hmac
 import os
+from dotenv import load_dotenv
+
 
 from fastapi import Header, HTTPException
 
+load_dotenv()
 from common.service_auth import require_service_token
 
 MAX_USER_ID_CHARS = 200

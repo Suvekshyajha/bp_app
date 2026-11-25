@@ -25,7 +25,10 @@ INGEST_SERVICE_URL = os.getenv("INGEST_SERVICE_URL", "http://localhost:8100").rs
 # It trusts the user id we send, so this is what stops other programs on the
 # network from asking for someone else's documents.
 INGEST_SERVICE_TOKEN = os.getenv("INGEST_SERVICE_TOKEN") or None
-
+if not INGEST_SERVICE_TOKEN:
+    raise RuntimeError(
+        "INGEST_SERVICE_TOKEN is missing from orchestrator environment"
+    )
 # TLS: the certificate (file path) that signed the ingestion service's certificate
 INGEST_TLS_CA = os.getenv("INGEST_TLS_CA") or None
 
