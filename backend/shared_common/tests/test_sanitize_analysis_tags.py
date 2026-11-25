@@ -2,7 +2,7 @@ import pytest
 
 from common.sanitize import clean_for_prompt
 
-TAGS = ["past_messages", "document_excerpts", "document_sample", "document_outline", "document_stats"]
+TAGS = ["past_messages", "document_excerpts", "available_documents", "document_sample", "document_outline", "document_stats"]
 
 
 @pytest.mark.parametrize("tag", TAGS)

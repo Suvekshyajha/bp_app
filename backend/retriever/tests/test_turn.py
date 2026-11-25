@@ -473,13 +473,18 @@ def test_excerpts_reach_the_model_apart_from_the_chat_context(session_factory, m
     assert [r["id"] for r in events[0].results] == ["old", "c1"]
 
 
-def test_without_documents_nothing_is_searched_or_embedded(session_factory, model, indexed, retrieved, doc_search):
+def test_a_user_without_any_documents_is_not_searched_or_embedded(session_factory, model, indexed, retrieved, doc_search):
+    """No documents at all: the turn runs exactly as it did before documents
+    existed. Only the cheap look at the user's library happens."""
+
     asyncio.run(collect())
 
+    assert doc_search.library_calls == [ALICE]
     assert doc_search.state_calls == []
     assert doc_search.calls == []
     assert doc_search.embeds == []
     assert model.calls[0]["documents"] is None
+    assert model.calls[0]["available_documents"] is None
     assert "vectors" not in retrieved.calls[0]
 
 
@@ -535,3 +540,159 @@ def test_context_for_storage_keeps_document_fields_only_for_excerpts():
         "section_title": "Results",
         "page": 3,
     }
+
+
+# ---------- no document chosen: the whole library is searched ----------
+
+BOB = "bob-id"
+LIBRARY = [
+    {"document_id": DOC, "filename": "report.pdf"},
+    {"document_id": OTHER_DOC, "filename": "notes.md"},
+]
+
+
+def test_with_no_document_chosen_the_whole_library_is_searched(session_factory, model, indexed, retrieved, doc_search):
+    """The question does not name a file: the right document is still found."""
+
+    doc_search.library = LIBRARY
+    doc_search.results = [doc_hit()]
+
+    events = asyncio.run(collect(query="What does it say about context window management?"))
+
+    call = doc_search.calls[0]
+    assert call["document_ids"] is None  # None = all of this user's documents
+    assert call["user_id"] == ALICE
+    assert call["limit"] == turn.DOCUMENT_CONTEXT_LIMIT
+    assert doc_search.embeds == ["What does it say about context window management?"]
+    assert [r["id"] for r in model.calls[0]["documents"]] == ["c1"]
+    assert [r["id"] for r in events[0].results] == ["c1"]
+
+
+def test_nothing_is_status_checked_when_no_document_is_chosen(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+
+    asyncio.run(collect())
+
+    assert doc_search.state_calls == []
+
+
+def test_the_library_is_looked_up_and_searched_for_the_callers_user_only(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+
+    asyncio.run(collect(user_id=BOB))
+
+    assert doc_search.library_calls == [BOB]
+    assert doc_search.calls[0]["user_id"] == BOB
+
+
+def test_the_chat_search_and_the_library_search_share_one_embedding(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+
+    asyncio.run(collect())
+
+    assert doc_search.embeds == ["hello"]
+    assert retrieved.calls[0]["vectors"] is doc_search.calls[0]["query_vectors"]
+
+
+def test_with_no_document_chosen_the_model_also_gets_the_document_names(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+    doc_search.results = [doc_hit()]
+
+    asyncio.run(collect())
+
+    assert model.calls[0]["available_documents"] == ["report.pdf", "notes.md"]
+
+
+def test_a_general_question_still_gets_the_names_when_no_excerpt_matches(session_factory, db, model, indexed, retrieved, doc_search):
+    """'What are these documents about?' finds no excerpt worth sending. The
+    model must still be able to list the documents instead of guessing one."""
+
+    doc_search.library = LIBRARY
+    doc_search.results = []
+
+    events = asyncio.run(collect(query="What are these documents about?"))
+
+    assert model.calls[0]["documents"] is None
+    assert model.calls[0]["available_documents"] == ["report.pdf", "notes.md"]
+    assert events[-1].answer == "Hello"
+
+
+def test_a_chosen_document_skips_the_library_and_the_names(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+    doc_search.results = [doc_hit()]
+
+    asyncio.run(collect_docs([DOC]))
+
+    assert doc_search.library_calls == []
+    assert doc_search.calls[0]["document_ids"] == [DOC]
+    assert model.calls[0]["available_documents"] is None
+
+
+def test_if_the_library_cannot_be_listed_the_chat_still_answers(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.library_error = RuntimeError("qdrant down")
+
+    events = asyncio.run(collect())
+
+    assert events[-1].answer == "Hello"
+    assert doc_search.calls == []
+    assert model.calls[0]["documents"] is None
+    assert model.calls[0]["available_documents"] is None
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+
+
+def test_if_the_library_search_fails_the_chat_still_answers_with_the_names(session_factory, db, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+    doc_search.error = RuntimeError("qdrant down")
+
+    events = asyncio.run(collect())
+
+    assert events[-1].answer == "Hello"
+    assert model.calls[0]["documents"] is None
+    assert model.calls[0]["available_documents"] == ["report.pdf", "notes.md"]
+    assert saved_messages(db) == [("user", "hello"), ("assistant", "Hello")]
+
+
+def test_the_conversation_history_still_reaches_the_model_next_to_library_excerpts(session_factory, model, indexed, retrieved, doc_search):
+    doc_search.library = LIBRARY
+    doc_search.results = [doc_hit()]
+
+    asyncio.run(collect(query="first question"))
+    asyncio.run(collect(query="and what about the second one?"))
+
+    history = model.calls[1]["history"]
+    assert [(t["role"], t["content"]) for t in history] == [
+        ("user", "first question"),
+        ("assistant", "Hello"),
+    ]
+    assert [r["id"] for r in model.calls[1]["documents"]] == ["c1"]
+
+
+def test_library_excerpts_are_saved_with_the_answer_and_come_back_on_replay(session_factory, db, model, indexed, retrieved, doc_search):
+    """The sources found without the user choosing a document are kept like
+    any other: an old answer still shows them after a reload."""
+
+    question = str(uuid.uuid4())
+    doc_search.library = LIBRARY
+    doc_search.results = [doc_hit()]
+
+    async def scenario():
+        async def ask():
+            return [
+                event
+                async for event in run_turn(ALICE, CHAT, "hello", user_message_id=question)
+            ]
+
+        first = await ask()
+        await drain_background()
+        again = await ask()
+        return first, again
+
+    first, again = asyncio.run(scenario())
+
+    assert len(model.calls) == 1  # the second request is a replay: no new answer
+    assert len(doc_search.calls) == 1
+
+    replayed = again[0].results[0]["payload"]
+    assert replayed["document_id"] == DOC
+    assert replayed["filename"] == "report.pdf"
+    assert again[-1].answer == first[-1].answer

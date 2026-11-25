@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 # How many related older messages of this chat to add on top of the history
 RETRIEVAL_LIMIT = 5
 
-# How many document excerpts one question may use
+# How many document excerpts one question may use. The chunks next to the best
+# ones come on top of this (see doc_retrieval.NEIGHBOR_HITS); the prompt
+# budget in llm.py decides how many of them the model actually sees.
 DOCUMENT_CONTEXT_LIMIT = 6
 
 # What is kept (and sent to the client) for a document excerpt, next to the
@@ -197,14 +199,30 @@ async def _check_documents(user_id: str, document_ids: list[str]) -> None:
         raise DocumentNotReady()
 
 
+async def _list_library(user_id: str) -> list[dict]:
+    """The user's finished documents: [{"document_id", "filename"}].
+
+    Used when the user chose no document. A failure is logged and means "no
+    documents": the chat still answers, as it did before documents existed.
+    """
+
+    try:
+        async with _jobs:
+            return await asyncio.to_thread(doc_retrieval.list_documents, user_id)
+    except Exception:
+        logger.exception("Could not list the documents; answering without them")
+        return []
+
+
 async def _retrieve_documents(
     vectors: dict | None,
     user_id: str,
-    document_ids: list[str],
+    document_ids: list[str] | None,
     limit: int,
 ) -> list[dict]:
-    """The best excerpts of the chosen documents. A failing search must not
-    stop the chat, so it is logged and the answer is written without it."""
+    """The best excerpts of the chosen documents, or of ALL the user's documents
+    when `document_ids` is None. A failing search must not stop the chat, so it
+    is logged and the answer is written without it."""
 
     if vectors is None:
         return []
@@ -410,8 +428,18 @@ async def _fresh_turn(
 
     # Related older messages. Ask for extra: the ones already in the
     # history are removed.
+    # No document chosen: every document of this user is searched, so the
+    # question does not have to name a file. Look at what the user has first:
+    # with no documents there is nothing to embed or search, and the turn runs
+    # exactly as it did before documents existed. The documents of one user
+    # only: every read in doc_retrieval holds the user id.
+    library: list[dict] = []
+
+    if not document_ids:
+        library = await _list_library(user_id)
+
     # The question is embedded ONCE when documents are searched too
-    vectors = await _embed(query) if document_ids else None
+    vectors = await _embed(query) if (document_ids or library) else None
 
     found = await _retrieve(
         query,
@@ -422,13 +450,18 @@ async def _fresh_turn(
     )
     results = drop_messages_already_in_history(found, history)[:RETRIEVAL_LIMIT]
 
-    # Excerpts of the documents the user chose. They are kept apart from
-    # the chat messages: the model gets them in their own block.
+    # Excerpts of the documents the user chose, or of all their documents
+    # when they chose none. They are kept apart from the chat messages: the
+    # model gets them in their own block.
     doc_results: list[dict] = []
 
     if document_ids:
         doc_results = await _retrieve_documents(
             vectors, user_id, list(document_ids), DOCUMENT_CONTEXT_LIMIT
+        )
+    elif library:
+        doc_results = await _retrieve_documents(
+            vectors, user_id, None, DOCUMENT_CONTEXT_LIMIT
         )
 
     yield Context(results + doc_results)
@@ -445,8 +478,13 @@ async def _fresh_turn(
     parts: list[str] = []
     failed = False
     saving: asyncio.Future | None = None
-    # `documents` is only passed when there are excerpts
+    # `documents` is only passed when there are excerpts. With no document
+    # chosen the model also gets the NAMES of the user's documents, so it can
+    # say which ones exist when the question does not say which one is meant.
     extra_args = {"documents": doc_results} if doc_results else {}
+
+    if library:
+        extra_args["available_documents"] = [d["filename"] for d in library]
     tokens = stream_response(query, results, history, **extra_args)
 
     try:
@@ -494,10 +532,11 @@ async def run_turn(
 ):
     """Yield Context, then Token (many), then Done. Raise on failure.
 
-    `document_ids` are the documents to search besides the chat. They are
-    checked first: DocumentNotFound (missing or someone else's) or
-    DocumentNotReady (still processing) is raised before anything is
-    claimed, saved or sent to the model.
+    `document_ids` are the documents the user chose to search besides the
+    chat. They are checked first: DocumentNotFound (missing or someone else's)
+    or DocumentNotReady (still processing) is raised before anything is
+    claimed, saved or sent to the model. When it is empty, ALL the user's
+    finished documents are searched instead (nobody else's, ever).
 
     `user_message_id` is the idempotency key: the id the browser chose for
     this question. Sending the same question with the same id again is safe:

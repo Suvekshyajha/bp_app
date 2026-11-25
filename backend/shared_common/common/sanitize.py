@@ -10,7 +10,8 @@ ingestion service (document text). Two things are removed:
    Nepali, Hindi, Persian and emoji sequences need to display correctly.
 
 2. Our own delimiter tags, in any spelling, so stored text cannot close a
-   <past_messages> or <document_excerpts> block and write outside it.
+   <past_messages>, <document_excerpts> or <available_documents> block and
+   write outside it.
 """
 
 import re
@@ -30,7 +31,7 @@ HIDDEN_CHARACTERS = re.compile(
 )
 
 DELIMITER_TAG = re.compile(
-    r"<\s*/?\s*(?:past_messages|document_excerpts|document_sample|document_outline|document_stats)\b[^>]*>?",
+    r"<\s*/?\s*(?:past_messages|document_excerpts|available_documents|document_sample|document_outline|document_stats)\b[^>]*>?",
     re.IGNORECASE,
 )
 
