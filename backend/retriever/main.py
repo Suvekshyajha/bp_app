@@ -21,7 +21,16 @@ from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
 from retrieval import strip_hidden_characters
 from service_auth import require_service_token
-from turn import Context, Done, Token, TurnInProgress, run_turn
+from turn import (
+    DOC_FIELDS,
+    Context,
+    DocumentNotFound,
+    DocumentNotReady,
+    Done,
+    Token,
+    TurnInProgress,
+    run_turn,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +59,10 @@ ALLOW_NO_AUTH = os.getenv("CHAT_ALLOW_NO_AUTH", "").lower() == "true"
 # Longest question accepted (the website cuts at the same length). Checked
 # here too, because this service must not trust whoever calls it.
 MAX_QUERY_CHARS = int(os.getenv("MAX_QUERY_CHARS", "4000"))
+
+# Most documents one question may search. Checked here too, because this
+# service must not trust whoever calls it.
+MAX_DOCUMENT_IDS = 5
 
 # ---------- Converting between our data and protobuf ----------
 
@@ -82,12 +95,19 @@ def to_timestamp(value: datetime | str | None) -> Timestamp:
 def to_retrieved_message(item: dict) -> chat_pb2.RetrievedMessage:
     payload = item.get("payload") or {}
 
+    # Only document chunks have these. protobuf does not accept None, and an
+    # empty document_id means "a past chat message".
     return chat_pb2.RetrievedMessage(
         id=item["id"],
         similarity=item["score"],
         role=ROLES.get(payload.get("role"), chat_pb2.ROLE_UNSPECIFIED),
         content=payload.get("content", ""),
         created_at=to_timestamp(payload.get("timestamp")),
+        document_id=payload.get("document_id") or "",
+        filename=payload.get("filename") or "",
+        chunk_index=payload.get("chunk_index") or 0,
+        section_title=payload.get("section_title") or "",
+        page=payload.get("page") or 0,
     )
 
 
@@ -158,19 +178,31 @@ def add_port(server: grpc.aio.Server) -> None:
 def saved_context(items: list[dict]) -> list[dict]:
     """Saved related messages, in the shape to_retrieved_message reads."""
 
-    return [
-        {
+    results = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        payload = {
+            "role": item.get("role"),
+            "content": item.get("content", ""),
+            "timestamp": item.get("timestamp"),
+        }
+
+        # Document chunks keep their file name and part, so the sources of an
+        # old answer still show after a reload
+        if item.get("document_id"):
+            for key in DOC_FIELDS:
+                payload[key] = item.get(key)
+
+        results.append({
             "id": item.get("id", ""),
             "score": item.get("score", 0.0),
-            "payload": {
-                "role": item.get("role"),
-                "content": item.get("content", ""),
-                "timestamp": item.get("timestamp"),
-            },
-        }
-        for item in items
-        if isinstance(item, dict)
-    ]
+            "payload": payload,
+        })
+
+    return results
 
 
 # ---------- Chat ----------
@@ -211,6 +243,27 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     "user_message_id must be a UUID",
                 )
 
+        # The documents to search besides the chat: at most 5, each a UUID.
+        # Written in one canonical form, so the same document is never
+        # searched twice.
+        document_ids = list(dict.fromkeys(request.document_ids))
+
+        if len(document_ids) > MAX_DOCUMENT_IDS:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"at most {MAX_DOCUMENT_IDS} documents can be searched at once",
+            )
+
+        try:
+            document_ids = list(
+                dict.fromkeys(str(uuid.UUID(value)) for value in document_ids)
+            )
+        except ValueError:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "document_ids must be UUIDs",
+            )
+
         try:
             async with aclosing(
                 run_turn(
@@ -218,6 +271,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     request.conversation_id,
                     query,
                     regenerate=request.regenerate,
+                    document_ids=document_ids,
                     **extra,
                 )
             ) as events:
@@ -251,6 +305,17 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
         except ConversationNotFound:
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
+
+        except DocumentNotFound:
+            # The orchestrator tells this apart from a missing chat by the
+            # text, which starts with "Document"
+            await context.abort(grpc.StatusCode.NOT_FOUND, "Document not found.")
+
+        except DocumentNotReady:
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "Document is still being processed.",
+            )
 
         except groq.RateLimitError:
             await context.abort(

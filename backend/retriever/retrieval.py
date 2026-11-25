@@ -53,12 +53,17 @@ def retrieve_messages(
     conversation_id: str,
     limit: int = 5,
     min_similarity: float | None = None,
+    vectors: dict | None = None,
 ) -> list[dict]:
     """Retrieve relevant messages of ONE chat of ONE user (hybrid search).
 
     Candidates are ranked by hybrid search (best match first). Those whose
     dense similarity to the question is below the threshold are dropped.
     `score` in the result is that similarity, not the fusion score.
+
+    `vectors` is the question already embedded (the result of embed_query).
+    Pass it when another search needs the same vectors, so the question is
+    embedded only once. Without it the question is embedded here.
     """
 
     # Without both ids the filter would be too wide: refuse instead of leaking
@@ -68,7 +73,8 @@ def retrieve_messages(
     threshold = MIN_SIMILARITY if min_similarity is None else min_similarity
     candidates = limit * CANDIDATE_FACTOR
 
-    vectors = embed_query(query)
+    if vectors is None:
+        vectors = embed_query(query)
 
     dense_vector = vectors["dense"]
 
