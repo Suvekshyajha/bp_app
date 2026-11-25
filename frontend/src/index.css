@@ -294,3 +294,15 @@ button:disabled { cursor: not-allowed; opacity: .52; }
   .doc-chip-name { max-width: 130px; }
   .doc-panel { max-height: 60dvh; }
 }
+
+/* ---- Upload notifications ---- */
+.toast-stack { position: fixed; z-index: 20; top: 64px; right: 16px; display: flex; max-width: min(380px, calc(100vw - 32px)); flex-direction: column; gap: 8px; }
+.toast { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid #cfe6d6; border-radius: 10px; background: #f3fbf5; box-shadow: 0 6px 20px rgba(30, 30, 50, 0.12); color: #2d6a43; font-size: 11px; line-height: 1.5; }
+.toast.is-info { border-color: #d8d3fb; background: #f7f6ff; color: var(--accent-dark); }
+.toast.is-error { border-color: #eed0d0; background: #fff7f7; color: #a14545; }
+.toast-icon { display: grid; flex: none; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: #2d6a43; color: #fff; font-size: 10px; font-weight: 700; }
+.toast.is-info .toast-icon { background: var(--accent-dark); }
+.toast.is-error .toast-icon { background: #a14545; }
+.toast-text { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.toast-close { display: grid; flex: none; width: 16px; height: 16px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
+.toast-close:hover { background: rgba(0, 0, 0, 0.07); }

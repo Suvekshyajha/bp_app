@@ -74,6 +74,9 @@ export function DocumentPanel({
               const file = event.target.files?.[0];
               // Allow picking the same file again later
               event.target.value = "";
+              // Hand the file over and return at once. The browser closes its
+              // file window as soon as this handler is done, so the upload
+              // itself (a promise) must never be awaited here.
               if (file) onUpload(file);
             }}
           />

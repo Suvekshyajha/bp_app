@@ -213,8 +213,11 @@ describe("upload", () => {
       await result.current.upload(new File(["hi"], "n.txt"));
     });
 
-    expect(result.current.error).toBe("You are uploading too quickly.");
+    expect(result.current.error).toBe(
+      'Could not upload "n.txt": You are uploading too quickly.',
+    );
     expect(result.current.uploading).toBe(false);
+    expect(result.current.notices).toEqual([]);
   });
 
   it("logs out on a 401 instead of showing an error", async () => {
@@ -231,6 +234,232 @@ describe("upload", () => {
 
     expect(onAuthError).toHaveBeenCalled();
     expect(result.current.error).toBeNull();
+  });
+});
+
+describe("upload feedback", () => {
+  async function ready() {
+    const hook = renderHook(() => useDocuments());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    return hook;
+  }
+
+  it("does not claim success when the file has only arrived", async () => {
+    vi.useFakeTimers();
+    getDocumentsMock.mockResolvedValue([]);
+    uploadMock.mockResolvedValue(doc("n", "pending", 2));
+
+    const { result } = await ready();
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+
+    expect(result.current.notices).toEqual([]);
+    expect(result.current.uploading).toBe(false);
+    expect(result.current.documents[0].status).toBe("pending");
+  });
+
+  it("reports success only once the document is ready", async () => {
+    vi.useFakeTimers();
+    getDocumentsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([doc("n", "processing", 2)])
+      .mockResolvedValue([doc("n", "ready", 2)]);
+    uploadMock.mockResolvedValue(doc("n", "pending", 2));
+
+    const { result } = await ready();
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(result.current.notices).toEqual([]); // still processing
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect(result.current.notices).toHaveLength(1);
+    expect(result.current.notices[0]).toMatchObject({ kind: "success" });
+    expect(result.current.notices[0].message).toContain("n.pdf");
+    expect(result.current.notices[0].message).toMatch(/ready/);
+
+    // ...and only once, even though the list keeps being refreshed
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    });
+    expect(result.current.notices).toHaveLength(1);
+  });
+
+  it("explains a document that fails while it is being processed", async () => {
+    vi.useFakeTimers();
+    getDocumentsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([doc("n", "failed", 2)].map((d) => ({ ...d, error: "no_text" })));
+    uploadMock.mockResolvedValue(doc("n", "pending", 2));
+
+    const { result } = await ready();
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect(result.current.notices).toHaveLength(1);
+    expect(result.current.notices[0].kind).toBe("error");
+    expect(result.current.notices[0].message).toMatch(/could not be processed/);
+    expect(result.current.notices[0].message).toMatch(/no readable text/i);
+  });
+
+  it("says so when the same file was already uploaded and ready", async () => {
+    getDocumentsMock.mockResolvedValue([doc("n", "ready", 2)]);
+    uploadMock.mockResolvedValue(doc("n", "ready", 2));
+
+    const { result } = renderHook(() => useDocuments());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+
+    expect(result.current.notices).toHaveLength(1);
+    expect(result.current.notices[0]).toMatchObject({ kind: "info" });
+    expect(result.current.notices[0].message).toMatch(/already uploaded/);
+  });
+
+  it("turns a network failure into words the user can act on", async () => {
+    getDocumentsMock.mockResolvedValue([]);
+    uploadMock.mockRejectedValue(
+      new Error("Could not reach the server. Check your connection and try again."),
+    );
+
+    const { result } = renderHook(() => useDocuments());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+
+    expect(result.current.error).toMatch(/n\.txt.*could not reach the server/i);
+    expect(result.current.notices).toEqual([]);
+  });
+
+  it("shows the file name while it is being sent, and clears it after", async () => {
+    getDocumentsMock.mockResolvedValue([]);
+    let finish: (value: DocumentInfo) => void = () => {};
+    uploadMock.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+    const { result } = renderHook(() => useDocuments());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let pending: Promise<void> = Promise.resolve();
+    act(() => {
+      pending = result.current.upload(new File(["hi"], "n.txt"));
+    });
+
+    expect(result.current.uploading).toBe(true);
+    expect(result.current.uploadingNames).toEqual(["n.txt"]);
+
+    await act(async () => {
+      finish(doc("n", "pending", 2));
+      await pending;
+    });
+
+    expect(result.current.uploading).toBe(false);
+    expect(result.current.uploadingNames).toEqual([]);
+  });
+
+  it("two uploads at once: uploading stays true until both are done", async () => {
+    getDocumentsMock.mockResolvedValue([]);
+    const finishers: Array<(value: DocumentInfo) => void> = [];
+    uploadMock.mockImplementation(
+      () => new Promise((resolve) => finishers.push(resolve)),
+    );
+
+    const { result } = renderHook(() => useDocuments());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let first: Promise<void> = Promise.resolve();
+    let second: Promise<void> = Promise.resolve();
+    act(() => {
+      first = result.current.upload(new File(["a"], "a.txt"));
+      second = result.current.upload(new File(["b"], "b.txt"));
+    });
+
+    await act(async () => {
+      finishers[0](doc("a", "ready", 2));
+      await first;
+    });
+    expect(result.current.uploading).toBe(true);
+    expect(result.current.uploadingNames).toEqual(["b.txt"]);
+
+    await act(async () => {
+      finishers[1](doc("b", "ready", 3));
+      await second;
+    });
+    expect(result.current.uploading).toBe(false);
+  });
+
+  it("a list that was requested before the upload cannot hide the new document", async () => {
+    let answerStale: (list: DocumentInfo[]) => void = () => {};
+    getDocumentsMock
+      .mockReturnValueOnce(new Promise((resolve) => (answerStale = resolve)))
+      .mockResolvedValue([doc("n", "ready", 2)]);
+    uploadMock.mockResolvedValue(doc("n", "ready", 2));
+
+    const { result } = renderHook(() => useDocuments());
+
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+    await act(async () => {
+      answerStale([]); // the old answer: it does not know "n"
+    });
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(ids(result.current.documents)).toEqual(["n"]);
+  });
+
+  it("deleting an upload that is still processing reports nothing", async () => {
+    vi.useFakeTimers();
+    getDocumentsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([doc("n", "ready", 2)]);
+    uploadMock.mockResolvedValue(doc("n", "pending", 2));
+    deleteMock.mockResolvedValue(undefined);
+
+    const { result } = await ready();
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+    await act(async () => {
+      await result.current.remove("n");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    });
+
+    expect(result.current.notices).toEqual([]);
+  });
+
+  it("a notice can be dismissed", async () => {
+    getDocumentsMock.mockResolvedValue([doc("n", "ready", 2)]);
+    uploadMock.mockResolvedValue(doc("n", "ready", 2));
+
+    const { result } = renderHook(() => useDocuments());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => {
+      await result.current.upload(new File(["hi"], "n.txt"));
+    });
+
+    act(() => result.current.dismissNotice(result.current.notices[0].id));
+
+    expect(result.current.notices).toEqual([]);
   });
 });
 

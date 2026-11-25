@@ -127,7 +127,17 @@ async function documentError(response: Response): Promise<Error> {
     // not JSON: use the generic text below
   }
 
-  return new Error(detail || "HTTP " + response.status);
+  return new Error(detail || describeStatus(response.status));
+}
+
+// Plain words for a failure the server gave no explanation for
+function describeStatus(status: number): string {
+  if (status === 409) return "This document is already being processed.";
+  if (status === 413) return "The file is too large.";
+  if (status === 415) return "This file type is not supported.";
+  if (status === 429) return "You are uploading too quickly. Please wait a moment.";
+  if (status >= 500) return "The document service is unavailable. Please try again.";
+  return "HTTP " + status;
 }
 
 // All of the user's documents (the server answers with a plain list)
@@ -141,11 +151,18 @@ export async function uploadDocument(file: File): Promise<DocumentInfo> {
   const form = new FormData();
   form.append("file", file);
 
-  const response = await fetch(API_BASE_URL + "/api/documents", {
-    method: "POST",
-    credentials: "include",
-    body: form,
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(API_BASE_URL + "/api/documents", {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+  } catch {
+    // fetch only rejects when nothing came back at all (offline, server down)
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  }
 
   if (!response.ok) throw await documentError(response);
 

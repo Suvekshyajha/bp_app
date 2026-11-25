@@ -5,6 +5,7 @@ import {
   getConversations,
   getMe,
   getMessages,
+  uploadDocument,
 } from "./api";
 import { API_BASE_URL } from "./config";
 
@@ -103,5 +104,57 @@ describe("error handling", () => {
     mockFetch(500);
 
     await expect(getConversations()).rejects.toThrow("HTTP 500");
+  });
+});
+describe("uploadDocument", () => {
+  const file = () => new File(["hello"], "notes.txt");
+
+  it("posts the file as multipart form data with the cookie", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ id: "d1", filename: "notes.txt", status: "pending" }),
+        { status: 202 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const created = await uploadDocument(file());
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/documents");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("file")).toBeInstanceOf(File);
+    expect(created).toMatchObject({ id: "d1", status: "pending" });
+  });
+
+  it("uses the server's own explanation when there is one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: "File is larger than 10 MB." }), { status: 413 }),
+      ),
+    );
+
+    await expect(uploadDocument(file())).rejects.toThrow("File is larger than 10 MB.");
+  });
+
+  it("explains a failure the server did not explain", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("oops", { status: 502 })));
+
+    await expect(uploadDocument(file())).rejects.toThrow(/unavailable/i);
+  });
+
+  it("explains a network failure instead of showing 'Failed to fetch'", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+    await expect(uploadDocument(file())).rejects.toThrow(/could not reach the server/i);
+  });
+
+  it("a 401 still means 'log in again'", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 401 })));
+
+    await expect(uploadDocument(file())).rejects.toBeInstanceOf(UnauthorizedError);
   });
 });
