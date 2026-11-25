@@ -15,6 +15,9 @@ from fastapi import Header, HTTPException
 
 load_dotenv()
 from common.service_auth import require_service_token
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_USER_ID_CHARS = 200
 
@@ -45,6 +48,7 @@ def _check_token(authorization: str | None) -> None:
         presented = authorization[7:].strip()
 
     if not hmac.compare_digest(presented.encode(), _token.encode()):
+        logger.warning("Service token refused: status=%s detail=%s", 401, "Invalid or missing service token.")  # [log]
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing service token.",
@@ -59,12 +63,14 @@ def require_user(
     """FastAPI dependency: checks the token first, then returns the user id."""
 
     if not _ready:
+        logger.warning("Request refused: status=%s detail=%s", 503, "Service is starting.")  # [log]
         raise HTTPException(status_code=503, detail="Service is starting.")
 
     _check_token(authorization)
 
     user_id = (x_user_id or "").strip()
     if not user_id or len(user_id) > MAX_USER_ID_CHARS:
+        logger.warning("Request refused: status=%s detail=%s", 400, "Missing or invalid X-User-Id header.")  # [log]
         raise HTTPException(status_code=400, detail="Missing or invalid X-User-Id header.")
 
     return user_id

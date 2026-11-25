@@ -27,6 +27,7 @@ from common.sanitize import strip_hidden_characters
 from doc_model import ParsedDocument, assign_section_paths
 from parsers import ParseError, parse_in_child
 from stats import compute_stats
+from common.log import set_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ def _is_processing(document_id: str) -> bool:
 def process_document(document_id: str) -> None:
     """Run one claimed job. Never raises: every outcome is written to the database."""
 
+    set_request_id(document_id[:12])  # [log]
     document = repository.get_document_by_id(document_id)
     if document is None or document["status"] != limits.PROCESSING:
         return
@@ -101,6 +103,7 @@ def process_document(document_id: str) -> None:
     try:
         # 1. parse, in a child process with a timeout
         repository.set_stage(document_id, "parsing")
+        logger.info("stage=parsing document=%s", document_id)  # [log]
         mark = time.monotonic()
         parsed = parse_in_child(_file_path(document_id), document["source_type"])
         parsed = _clean(parsed)
@@ -111,6 +114,7 @@ def process_document(document_id: str) -> None:
 
         # 2. stage 1: decide the strategy (reuses an earlier LLM answer)
         repository.set_stage(document_id, "analyzing")
+        logger.info("stage=analyzing document=%s", document_id)  # [log]
         cached = None
         if document["analysis"]:
             try:
@@ -123,6 +127,7 @@ def process_document(document_id: str) -> None:
 
         # 3. stage 2: chunk, deterministic
         repository.set_stage(document_id, "chunking")
+        logger.info("stage=chunking document=%s", document_id)  # [log]
         result = run_chunking(parsed, analysis)
         mark = lap("chunk_ms", mark)
 
@@ -132,6 +137,7 @@ def process_document(document_id: str) -> None:
         # 4. start clean (a retry may have left chunks behind), then embed and store
         _discard_chunks(user_id, document_id)
         repository.set_stage(document_id, "embedding")
+        logger.info("stage=embedding document=%s", document_id)  # [log]
         embed_ms = 0
         store_ms = 0
         for first in range(0, len(result.chunks), limits.EMBED_BATCH_SIZE):
@@ -154,6 +160,7 @@ def process_document(document_id: str) -> None:
 
         # 5. the last steps: report, searchable, ready
         repository.set_stage(document_id, "storing")
+        logger.info("stage=storing document=%s", document_id)  # [log]
         timings["total_ms"] = int((time.monotonic() - started) * 1000)
         repository.save_report(document_id, json.dumps({**result.report, "timings": timings}))
 
@@ -166,6 +173,7 @@ def process_document(document_id: str) -> None:
         _discard_chunks(user_id, document_id)
 
     except (ParseError, ChunkingError) as error:
+        logger.warning("Job rejected: document=%s code=%s", document_id, error.code)  # [log]
         outcome = error.code
         repository.set_failed(document_id, error.code)
         _discard_chunks(user_id, document_id)

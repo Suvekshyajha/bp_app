@@ -7,15 +7,19 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 import auth
 import limits
 import models  # noqa: F401  (registers the tables)
 from database import Base, engine, migrate_schema
 from routes import router
+from common.log import set_request_id, setup_logging
+import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+setup_logging("ingestion")
 
 
 @asynccontextmanager
@@ -37,6 +41,24 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+# [trace-middleware] one id per request, one result line per request
+@app.middleware("http")
+async def trace_requests(request: Request, call_next):
+    rid = set_request_id(request.headers.get("x-request-id"))
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("%s %s crashed", request.method, request.url.path)
+        raise
+    ms = int((time.monotonic() - started) * 1000)
+    level = logging.WARNING if response.status_code >= 400 else logging.INFO
+    logger.log(level, "%s %s -> %d (%d ms)",
+               request.method, request.url.path, response.status_code, ms)
+    response.headers["X-Request-ID"] = rid
+    return response
+
 
 app.include_router(router)
 

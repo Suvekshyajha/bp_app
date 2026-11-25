@@ -33,12 +33,15 @@ def run_once() -> bool:
     if claimed is None:
         return False
 
+    logging.getLogger("worker").info("Claimed document=%s", claimed["id"])  # [log]
     jobs.process_document(claimed["id"])
     return True
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from common.log import setup_logging
+
+    setup_logging("ingestion-worker")
     logger = logging.getLogger("worker")
 
     import limits

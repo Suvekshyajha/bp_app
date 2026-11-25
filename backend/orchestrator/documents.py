@@ -40,6 +40,7 @@ PASS_THROUGH = {404, 409, 413, 415}
 
 
 def to_http_error(error: IngestError) -> HTTPException:
+    logger.warning("Document service error: status=%s detail=%s", error.status, error.detail)  # [log]
     if error.status in PASS_THROUGH:
         return HTTPException(status_code=error.status, detail=error.detail or "Request refused.")
 
@@ -80,6 +81,7 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
 
     if not allowed:
         wait = max(1, math.ceil(retry_after))
+        logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 429, f"You are uploading too quickly. Please wait {wait} seconds and try again.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
         raise HTTPException(
             status_code=429,
             detail=f"You are uploading too quickly. Please wait {wait} seconds and try again.",
@@ -90,9 +92,11 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
     declared = request.headers.get("content-length")
 
     if not declared or not declared.isdigit():
+        logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 411, "Content-Length is required.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
         raise HTTPException(status_code=411, detail="Content-Length is required.")
 
     if int(declared) > MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD:
+        logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 413, f"File is larger than {MAX_UPLOAD_MB} MB.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
         raise HTTPException(status_code=413, detail=f"File is larger than {MAX_UPLOAD_MB} MB.")
 
     # 3. Read the form: one file, a few small fields (which we ignore)
@@ -101,6 +105,7 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
     except HTTPException:
         raise
     except Exception:
+        logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 400, "Could not read the upload.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
         raise HTTPException(status_code=400, detail="Could not read the upload.") from None
 
     spool = tempfile.SpooledTemporaryFile(max_size=READ_BLOCK)
@@ -109,11 +114,13 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
         upload = form.get("file")
 
         if not isinstance(upload, UploadFile):
+            logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 400, "A file is required.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
             raise HTTPException(status_code=400, detail="A file is required.")
 
         full_name = clean_filename(upload.filename)
 
         if not full_name.lower().endswith(ALLOWED_EXTENSIONS):
+            logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 415, "Only .pdf, .docx, .txt and .md files are accepted.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
             raise HTTPException(
                 status_code=415,
                 detail="Only .pdf, .docx, .txt and .md files are accepted.",
@@ -131,6 +138,7 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
             size += len(block)
 
             if size > MAX_UPLOAD_BYTES:
+                logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 413, f"File is larger than {MAX_UPLOAD_MB} MB.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
                 raise HTTPException(
                     status_code=413,
                     detail=f"File is larger than {MAX_UPLOAD_MB} MB.",
@@ -139,6 +147,7 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
             spool.write(block)
 
         if size == 0:
+            logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 415, "The file is empty.", user.id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
             raise HTTPException(status_code=415, detail="The file is empty.")
 
         spool.seek(0)
@@ -153,6 +162,7 @@ async def upload_document(request: Request, user: User = Depends(get_current_use
         except IngestError as error:
             raise to_http_error(error) from None
 
+        logger.info("Upload accepted: user=%s file=%s size=%s status=%s", user.id, full_name, size, status_code)  # [log]
         return JSONResponse(status_code=status_code, content=body)
 
     finally:
@@ -180,6 +190,7 @@ async def get_document(document_id: str, user: User = Depends(get_current_user))
 
 @router.delete("/{document_id}", status_code=204)
 async def delete_document(document_id: str, user: User = Depends(get_current_user)):
+    logger.info("Delete requested: user=%s document=%s", user.id, document_id)  # [log]
     document_id = checked_document_id(document_id)
 
     try:

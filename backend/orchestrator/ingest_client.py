@@ -14,6 +14,7 @@ import ssl
 
 import httpx
 from dotenv import load_dotenv
+from common.log import get_request_id
 
 load_dotenv()
 
@@ -104,7 +105,7 @@ async def _send(method: str, path: str, user_id: str, timeout: float, **kwargs) 
         response = await _get_client().request(
             method,
             path,
-            headers={"X-User-Id": user_id},
+            headers={"X-User-Id": user_id, "X-Request-ID": get_request_id()},
             timeout=timeout,
             **kwargs,
         )

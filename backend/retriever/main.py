@@ -31,6 +31,7 @@ from turn import (
     TurnInProgress,
     run_turn,
 )
+from common.log import set_request_id, setup_logging
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,11 @@ def to_retrieved_message(item: dict) -> chat_pb2.RetrievedMessage:
 
 # ---------- Who may call this service ----------
 
+def _trace(context) -> None:
+    """Continue the caller's trace: its request id arrives in the gRPC metadata."""
+    set_request_id(dict(context.invocation_metadata() or ()).get("x-request-id"))
+
+
 class ServiceTokenInterceptor(grpc.aio.ServerInterceptor):
     """Rejects every call that does not carry the shared secret.
 
@@ -139,6 +145,7 @@ class ServiceTokenInterceptor(grpc.aio.ServerInterceptor):
             given = given.encode()
 
         if not hmac.compare_digest(given, self._expected):
+            logger.warning("Service call refused (bad token): method=%s", handler_call_details.method)  # [log]
             return self._deny
 
         return await continuation(handler_call_details)
@@ -212,6 +219,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     async def Chat(self, request, context):
         # Hidden characters are removed BEFORE the question is saved or sent
         # to the model, so they can never carry instructions.
+        _trace(context)  # [log]
         query = strip_hidden_characters(request.query).strip()
 
         if (
@@ -219,12 +227,14 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             or not request.conversation_id
             or not query
         ):
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id, conversation_id and query are required")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id, conversation_id and query are required",
             )
 
         if len(query) > MAX_QUERY_CHARS:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, f"query must be at most {MAX_QUERY_CHARS} characters")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"query must be at most {MAX_QUERY_CHARS} characters",
@@ -238,6 +248,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             try:
                 extra["user_message_id"] = str(uuid.UUID(request.user_message_id))
             except ValueError:
+                logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_message_id must be a UUID")  # [log]
                 await context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     "user_message_id must be a UUID",
@@ -249,6 +260,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         document_ids = list(dict.fromkeys(request.document_ids))
 
         if len(document_ids) > MAX_DOCUMENT_IDS:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, f"at most {MAX_DOCUMENT_IDS} documents can be searched at once")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"at most {MAX_DOCUMENT_IDS} documents can be searched at once",
@@ -259,6 +271,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 dict.fromkeys(str(uuid.UUID(value)) for value in document_ids)
             )
         except ValueError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "document_ids must be UUIDs")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "document_ids must be UUIDs",
@@ -298,38 +311,45 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                         )
 
         except TurnInProgress:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.ABORTED.name, "This message is already being answered.")  # [log]
             await context.abort(
                 grpc.StatusCode.ABORTED,
                 "This message is already being answered.",
             )
 
         except ConversationNotFound:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Conversation not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
         except DocumentNotFound:
             # The orchestrator tells this apart from a missing chat by the
             # text, which starts with "Document"
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Document not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Document not found.")
 
         except DocumentNotReady:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.FAILED_PRECONDITION.name, "Document is still being processed.")  # [log]
             await context.abort(
                 grpc.StatusCode.FAILED_PRECONDITION,
                 "Document is still being processed.",
             )
 
         except groq.RateLimitError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.RESOURCE_EXHAUSTED.name, "The language model is busy. Try again shortly.")  # [log]
             await context.abort(
                 grpc.StatusCode.RESOURCE_EXHAUSTED,
                 "The language model is busy. Try again shortly.",
             )
 
         except groq.APITimeoutError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.DEADLINE_EXCEEDED.name, "The language model took too long to answer.")  # [log]
             await context.abort(
                 grpc.StatusCode.DEADLINE_EXCEEDED,
                 "The language model took too long to answer.",
             )
 
         except groq.APIConnectionError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.UNAVAILABLE.name, "Could not reach the language model.")  # [log]
             await context.abort(
                 grpc.StatusCode.UNAVAILABLE,
                 "Could not reach the language model.",
@@ -337,6 +357,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
         except Exception:
             logger.exception("Chat turn failed")
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INTERNAL.name, "Internal error.")  # [log]
             await context.abort(grpc.StatusCode.INTERNAL, "Internal error.")
 
 
@@ -345,7 +366,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
 
     async def ListConversations(self, request, context):
+        _trace(context)  # [log]
         if not request.user_id:
+            logger.warning("ListConversations refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id is required")  # [log]
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
 
         try:
@@ -357,6 +380,7 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
             )
 
         except InvalidCursor:
+            logger.warning("ListConversations refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "Invalid cursor.")  # [log]
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid cursor.")
 
         return chat_pb2.ListConversationsResponse(
@@ -373,7 +397,9 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
         )
 
     async def ListMessages(self, request, context):
+        _trace(context)  # [log]
         if not request.user_id or not request.conversation_id:
+            logger.warning("ListMessages refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id and conversation_id are required")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id and conversation_id are required",
@@ -389,9 +415,11 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
             )
 
         except ConversationNotFound:
+            logger.warning("ListMessages refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Conversation not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
         except InvalidCursor:
+            logger.warning("ListMessages refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "Invalid cursor.")  # [log]
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid cursor.")
 
         return chat_pb2.ListMessagesResponse(
@@ -412,7 +440,9 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
         )
 
     async def DeleteConversation(self, request, context):
+        _trace(context)  # [log]
         if not request.user_id or not request.conversation_id:
+            logger.warning("DeleteConversation refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id and conversation_id are required")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id and conversation_id are required",
@@ -439,6 +469,7 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
                 )
             except Exception:
                 logger.exception("Could not delete the chat from the search index")
+                logger.warning("DeleteConversation refused: %s: %s", grpc.StatusCode.UNAVAILABLE.name, "Could not reach the search index.")  # [log]
                 await context.abort(
                     grpc.StatusCode.UNAVAILABLE,
                     "Could not reach the search index.",
@@ -451,6 +482,7 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
             )
 
         except ConversationNotFound:
+            logger.warning("DeleteConversation refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Conversation not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
         return chat_pb2.DeleteConversationResponse()
@@ -496,5 +528,5 @@ async def serve():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    setup_logging("retriever")
     asyncio.run(serve())

@@ -11,6 +11,9 @@ import logging
 import os
 import re
 import uuid
+import logging
+
+logger = logging.getLogger(name=__name__)
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -80,11 +83,13 @@ def upload(request: Request, file: UploadFile = File(...), user_id: str = Depend
     # Cheap early refusal, before anything is copied
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > limits.MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD:
+        logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 413, f"File is larger than {limits.MAX_UPLOAD_MB} MB.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
         raise HTTPException(status_code=413, detail=f"File is larger than {limits.MAX_UPLOAD_MB} MB.")
 
     full_name = _clean_filename(file.filename)
     source_type = source_type_from_filename(full_name)
     if not full_name or source_type is None:
+        logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 415, "Only .pdf, .docx, .txt and .md files are accepted.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
         raise HTTPException(status_code=415, detail="Only .pdf, .docx, .txt and .md files are accepted.")
     filename = full_name[:MAX_FILENAME_CHARS]
 
@@ -102,18 +107,25 @@ def upload(request: Request, file: UploadFile = File(...), user_id: str = Depend
                     break
                 size += len(block)
                 if size > limits.MAX_UPLOAD_BYTES:
+                    logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 413, f"File is larger than {limits.MAX_UPLOAD_MB} MB.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
                     raise HTTPException(status_code=413, detail=f"File is larger than {limits.MAX_UPLOAD_MB} MB.")
                 digest.update(block)
                 out.write(block)
+                logger.debug(f"Read {len(block)} bytes from uploaded file.")
 
         if size == 0:
+            logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 415, "The file is empty.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
             raise HTTPException(status_code=415, detail="The file is empty.")
 
         try:
             check_file_signature(str(temporary), source_type)
         except ParseError as error:
             if error.code == limits.ERR_TOO_LARGE:
+                logger.warning("File %s rejected: %s", filename, error) 
+                logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 413, "The file has too much text.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
                 raise HTTPException(status_code=413, detail="The file has too much text.") from None
+          
+            logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 415, "The file content does not match its type.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
             raise HTTPException(status_code=415, detail="The file content does not match its type.") from None
 
         file_hash = digest.hexdigest()
@@ -122,9 +134,11 @@ def upload(request: Request, file: UploadFile = File(...), user_id: str = Depend
         # The same user and the same file again: nothing new, unless it had failed
         existing = repository.get_document(user_id, document_id)
         if existing is not None and existing["status"] != limits.FAILED:
+            logger.info("Upload duplicate: user=%s document=%s", user_id, document_id)  # [log]
             return JSONResponse(status_code=200, content=_public(existing))
 
         if existing is None and repository.count_user_documents(user_id) >= limits.MAX_DOCS_PER_USER:
+            logger.warning("Upload refused: status=%s detail=%s user=%s file=%s size=%s", 409, f"You can keep at most {limits.MAX_DOCS_PER_USER} documents. Delete one first.", user_id, locals().get('full_name', '-'), locals().get('size', '-'))  # [log]
             raise HTTPException(
                 status_code=409,
                 detail=f"You can keep at most {limits.MAX_DOCS_PER_USER} documents. Delete one first.",
@@ -139,6 +153,7 @@ def upload(request: Request, file: UploadFile = File(...), user_id: str = Depend
             _remove(limits.UPLOAD_DIR / document_id)  # lost a race with a finished upload
             return JSONResponse(status_code=200, content=_public(document))
 
+        logger.info("Upload stored: user=%s document=%s file=%s size=%d created=%s", user_id, document["id"], filename, size, created)  # [log]
         status_code = 202 if created else 200
         return JSONResponse(
             status_code=status_code,
@@ -164,6 +179,7 @@ def get_document(document_id: str, user_id: str = Depends(auth.require_user)):
 
 @router.delete("/{document_id}", status_code=204)
 def delete_document(document_id: str, user_id: str = Depends(auth.require_user)):
+    logger.info("Delete requested: user=%s document=%s", user_id, document_id)  # [log]
     if repository.get_document(user_id, document_id) is None:
         raise NOT_FOUND
 

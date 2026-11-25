@@ -21,6 +21,8 @@ from auth import (
     extend_session,
     get_session_user_id,
 )
+from common.log import set_request_id
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,9 @@ async def answer_question(
     cancels the gRPC call, and the service stops writing.
     """
 
+    set_request_id()  # [log]
+    _started = time.monotonic()  # [log]
+    logger.info("Question started: conversation=%s documents=%d regenerate=%s", conversation_id, len(document_ids or ()), regenerate)  # [log]
     results: list[dict] = []
     parts: list[str] = []
     final_answer: str | None = None
@@ -204,6 +209,7 @@ async def answer_question(
         await events.aclose()
 
     answer = final_answer if final_answer is not None else "".join(parts)
+    logger.info("Question answered: conversation=%s cancelled=%s chars=%d ms=%d", conversation_id, cancelled, len(final_answer or "".join(parts)), int((time.monotonic() - _started) * 1000))  # [log]
 
     await send({
         "type": "done",

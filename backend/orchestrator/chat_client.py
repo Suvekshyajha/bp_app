@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 import chat_pb2
 import chat_pb2_grpc
+from common.log import get_request_id
 
 load_dotenv()
 
@@ -96,9 +97,9 @@ def _metadata() -> tuple:
     """Sent with every call."""
 
     if CHAT_SERVICE_TOKEN:
-        return (("authorization", f"Bearer {CHAT_SERVICE_TOKEN}"),)
+        return (("authorization", f"Bearer {CHAT_SERVICE_TOKEN}"), ("x-request-id", get_request_id()))
 
-    return ()
+    return (("x-request-id", get_request_id()),)
 
 
 def _stubs():
