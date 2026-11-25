@@ -2,7 +2,7 @@
 
 A chat app with a memory. You talk to an AI assistant, and it can remember what you said earlier in the conversation. When you ask a question, the app searches your older messages for anything relevant and gives it to the AI along with your question. Everything that is saved is **encrypted**, so a copy of the database or of Qdrant's storage is unreadable without the server's key.
 
-> **Status: work in progress.** The chat pipeline, sign up / login, saved chat history, rate limiting, encryption at rest and automated tests are built.
+> **Status: work in progress.** The chat pipeline, sign up / login, saved chat history, rate limiting, encryption at rest, document upload with questions about your documents, and automated tests are built.
 
 ## Features
 
@@ -32,9 +32,15 @@ A chat app with a memory. You talk to an AI assistant, and it can remember what 
 
 - **Live chat screen:** typing indicator, connection status, automatic reconnect, retry for failed messages, and the related past messages shown as context under each answer.
 
-- **One command start (Windows):** `run-all.ps1` starts Qdrant, the retriever, the orchestrator and the frontend.
+- **Ask about your documents:** upload a PDF, DOCX, TXT or Markdown file (up to 10 MB), wait until it shows **Ready**, tick it, and ask questions about it. Up to 5 documents can be ticked per question, and the answer is written from the best matching parts of them.
 
-- **Automated tests:** 46 orchestrator, 52 retriever and 77 frontend tests (see [Tests](#tests)).
+- **Sources under each answer:** the **Sources** panel lists the document parts (file name and part number) and the older chat messages the answer used. Sources are saved with the answer, so they are still there when the chat is loaded again.
+
+- **A separate ingestion service:** reading, splitting, embedding and storing a document is done by its own service and a background worker, so uploads do not slow down the chat. Document text and file names are encrypted, and every document belongs to one user.
+
+- **One command start (Windows):** `run-all.ps1` starts Qdrant, the retriever, the ingestion API, the ingestion worker, the orchestrator and the frontend.
+
+- **Automated tests:** orchestrator, retriever, ingestion, shared-package and frontend suites; each one prints its own test count (see [Tests](#tests)).
 
 ## How it works (in plain words)
 
@@ -142,6 +148,43 @@ The **retriever** (folder `backend/retriever`, also called the chat service) is 
 
 ```
 
+### Documents and the ingestion service
+
+Uploaded documents are handled by a separate **ingestion service** (folder `backend/ingestion`). It has an **API** process (accepts the file, checks it, answers at once) and a **worker** process (reads, splits, embeds, encrypts and stores the document). The retriever only **reads** the stored document chunks, to answer questions. Qdrant is the only link between the two; the retriever and the ingestion service never call each other.
+
+```text
+Browser (React) ──REST + WebSocket (session cookie)──► Orchestrator
+                    login, sessions, rate limits, user_id from SESSION only,
+                    upload checks (size, type), no document storage
+
+  ① chat + user_id + document_ids (gRPC, existing channel) ──► Retriever
+  ② upload / list / status / delete + user_id (HTTP, token) ──► Ingestion API
+
+Retriever  (chat service, owns chat.db)
+  history · memory search · DOCUMENT search (read only) · LLM · answer + sources
+  ③ HTTPS ──► Groq
+  ④ READ, filtered by user_id (+ document_id, status=ready for answers) ──► Qdrant
+
+Ingestion service (owns ingest.db: one `documents` table, job state = its status and stage)
+  API process:    accepts the file, checks it, writes a job row, returns at once
+  Worker process: parse ► chunk ► embed ► encrypt ► upsert ► set status=ready LAST
+  ⑤ WRITE (upsert, set_payload, delete) ──► Qdrant
+
+Qdrant
+  chat_messages     retriever reads and writes
+  document_chunks   ingestion writes, retriever reads only
+```
+
+- **Upload:** Browser ► Orchestrator (checks, user id) ► Ingestion API (`pending`) ► Worker (`processing`) ► Qdrant ► `ready`. The browser lists its documents every 2 seconds while any is `pending` or `processing`.
+
+- **Ask:** Browser ► Orchestrator (user id, `document_ids`) ► Retriever ► owner and ready check ► filtered Qdrant search plus chat memory ► Groq ► streamed answer with sources.
+
+- **Delete:** Browser ► Orchestrator ► Ingestion ► chunks removed from Qdrant, then the row from `ingest.db`.
+
+- **Status:** Browser ► Orchestrator ► Ingestion (`ingest.db`).
+
+New files for this feature: `orchestrator/documents.py` and `ingest_client.py`, `retriever/doc_retrieval.py`, `frontend/src/components/DocumentPanel.tsx` and `hooks/useDocuments.ts`. The shared code (encryption, service token, text cleaning, embeddings) lives in `backend/shared_common` (package `common`).
+
 ### What each part does
 
 | Part | Job |
@@ -154,7 +197,7 @@ The **retriever** (folder `backend/retriever`, also called the chat service) is 
 
 | **SQLite, orchestrator** (`chat.db`) | Stores users and sessions only. Lives inside `backend/orchestrator`. |
 
-| **Retriever** (chat service, folder `backend/retriever`) | The part that owns the conversation. For each question it checks that the chat belongs to the user, loads the recent history, searches related older messages, calls the AI, streams the answer, and saves both messages. It also converts messages into searchable vectors and is the **only** service that talks to Qdrant, Groq and the message database. It holds the encryption key. |
+| **Retriever** (chat service, folder `backend/retriever`) | The part that owns the conversation. For each question it checks that the chat belongs to the user, loads the recent history, searches related older messages, calls the AI, streams the answer, and saves both messages. It also converts messages into searchable vectors and is the only service that talks to Groq and the message database (the ingestion service also writes document chunks to Qdrant; the retriever only reads them). It holds the encryption key. |
 
 | **SQLite, retriever** (`chat.db`) | Stores conversations and messages (text and titles encrypted). Lives inside `backend/retriever`. |
 
@@ -170,7 +213,13 @@ The **retriever** (folder `backend/retriever`, also called the chat service) is 
 
 - Retriever ↔ Groq: HTTPS, with the answer streamed back token by token.
 
-- Retriever ↔ Qdrant: database connection.
+- Retriever ↔ Qdrant: database connection. Chat messages are read and written; document chunks are **read only** (the retriever has no write path to them).
+
+- Orchestrator ↔ Ingestion: HTTP with a shared service token (`INGEST_SERVICE_TOKEN`) and an `X-User-Id` header. The user id is the session's, never the browser's, and the ingestion service trusts it, so **keep port 8100 on an internal network** (or use TLS).
+
+- Ingestion ↔ Qdrant: writes the document chunks (`document_chunks`). The retriever and the ingestion service never call each other.
+
+- A document id that does not exist and one that belongs to another user give the same "not found" answer.
 
 - The orchestrator never talks to Qdrant, Groq or the message database directly.
 
@@ -198,7 +247,19 @@ All routes are under `/api`. Everything except `health`, `signup` and `login` ne
 
 | `GET /conversations/{id}/messages?limit=&cursor=` | One chat's messages, newest page first |
 
+| `POST /documents` | Upload one document (multipart field `file`; `.pdf`, `.docx`, `.txt`, `.md`; up to `MAX_UPLOAD_MB`). `202` for a new document, `200` if the same file was uploaded before |
+
+| `GET /documents` | The user's documents with their status |
+
+| `GET /documents/{id}` | One document's status |
+
+| `DELETE /documents/{id}` | Delete the document and its chunks (`204`) |
+
 The two history routes are answered by the retriever; the orchestrator checks the session and forwards the request.
+
+Each assistant message in the messages route also has `results`: the sources (document parts and older messages) that answer was written with, in the same shape as the live `done` message.
+
+**Documents.** The document routes are answered by the ingestion service. The orchestrator first checks the session, the size, the type and an upload rate limit (default 5 per 60 seconds, otherwise `429`). A document id that does not exist and one that belongs to someone else both return `404`. Other answers: `409` (too many documents), `413` (too large), `415` (wrong type or empty), `502` or `503` (the document service is down or refused the request). A document goes `pending`, then `processing`, then `ready`, or ends as `failed` with a short error code.
 
 **Pagination.** Both history routes use cursors, so new messages never shift the pages:
 
@@ -234,6 +295,8 @@ Messages are JSON.
 
 | Browser → server | `{"query": "...", "conversation_id": "..."}` | Ask a question |
 
+| Browser → server | `{"query": "...", "conversation_id": "...", "document_ids": ["<uuid>", "..."]}` | Ask a question and also search these documents (at most 5, all must be `ready`) |
+
 | Browser → server | `{"type": "cancel", "conversation_id": "..."}` | Stop the answer being written in that chat |
 
 | Browser → server | `{"type": "ping"}` | Heartbeat |
@@ -261,6 +324,8 @@ Messages are JSON.
 | `4001` | browser | No pong within 10 seconds | Reconnect with backoff |
 
 **Rules**
+
+- **Documents:** `document_ids` is optional. A bad list gives `Invalid document id.`. A document that is still being processed gives `A selected document is still being processed. Try again in a moment.` and nothing is saved. A missing document, or one that belongs to someone else, gives `A selected document was not found.` In the `results` of an answer, a document part has `document_id`, `filename` and `chunk_index` (and sometimes `section_title` and `page`); an older chat message has `role` and `timestamp` instead.
 
 - One answer at a time **per chat**, and at most 3 chats answering at once. Extra messages are refused with an error. The server keeps reading while it answers, which is how `cancel` gets through. Cancelling closes the gRPC call, and the retriever saves the part of the answer written so far.
 
@@ -434,9 +499,9 @@ day2-bp_app/
 
 │       ├── services/         # chatSocket.ts (WebSocket + heartbeat), storage, identity
 
-│       ├── hooks/            # useChatSocket, useConversations, useChatMessages
+│       ├── hooks/            # useChatSocket, useConversations, useChatMessages, useDocuments (upload, list, delete, polling)
 
-│       ├── components/       # Sidebar, MessageList, ...
+│       ├── components/       # Sidebar, MessageList, DocumentPanel, ContextPanel (Sources), ...
 
 │       └── pages/            # LoginPage, ChatPage
 
@@ -526,6 +591,26 @@ day2-bp_app/
 
 │   │   └── tests/            # conftest.py, test_turn.py, test_repository.py, test_grpc.py
 
+│   ├── ingestion/            # the ingestion service: API (main.py) and worker (worker.py)
+
+│   │   ├── .env.example
+
+│   │   ├── routes.py         # /documents: upload, list, status, delete
+
+│   │   ├── jobs.py           # one document job: parse, analyse, chunk, embed, store
+
+│   │   ├── worker.py         # background worker (runs at low priority)
+
+│   │   ├── parsers.py, stats.py, analyzer.py, analysis_schema.py, chunking/   # reading and splitting
+
+│   │   ├── qdrant_docs.py    # writes the encrypted chunks to Qdrant
+
+│   │   ├── repository.py, models.py, database.py   # ingest.db: documents and job state
+
+│   │   └── tests/
+
+│   ├── shared_common/        # package `common`: crypto, service_auth, sanitize, embeddings, settings
+
 │   ├── proto/
 
 │   │   └── chat.proto        # the gRPC contract (the only copy)
@@ -567,6 +652,10 @@ python -m venv .venv
 pip install -r orchestrator\requirements-dev.txt   # includes requirements.txt + test tools
 
 pip install -r retriever\requirements.txt          # includes groq, SQLAlchemy and cryptography
+
+pip install -e shared_common                       # the shared package `common`
+
+pip install -r ingestion\requirements.txt          # parsers, chunking, Qdrant, Groq
 
 ```
 
@@ -638,6 +727,44 @@ CHAT_ENCRYPTION_KEYS=your_generated_key_here
 
 | `RETRIEVAL_MIN_SIMILARITY` | Optional. Minimum similarity (0 to 1) for a related message to be used. Default 0.5. |
 
+Add these to `backend/orchestrator/.env` (the defaults are shown; the token is required):
+
+```env
+INGEST_SERVICE_URL=http://localhost:8100
+INGEST_SERVICE_TOKEN=the_same_token_as_in_the_ingestion_env
+INGEST_TLS_CA=
+MAX_UPLOAD_MB=10
+DOC_UPLOAD_RATE_LIMIT=5
+```
+
+`backend/ingestion/.env` (copy `.env.example`)
+
+```env
+QDRANT_URL=http://localhost:6333
+CHAT_ENCRYPTION_KEYS=exactly_the_same_keys_as_the_retriever
+INGEST_SERVICE_TOKEN=a_long_random_token
+GROQ_API_KEY=your_key_here
+```
+
+Make a token with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. The ingestion service will not start without `INGEST_SERVICE_TOKEN`, and a different `CHAT_ENCRYPTION_KEYS` than the retriever's means document text cannot be read back.
+
+| Setting | What it does |
+|---|---|
+| `INGEST_SERVICE_TOKEN` | Required, and the same value in the ingestion service and the orchestrator. |
+| `CHAT_ENCRYPTION_KEYS` (ingestion) | The same keys as the retriever. Document text and file names are encrypted with them. |
+| `QDRANT_URL`, `QDRANT_API_KEY` | The same Qdrant as the retriever. |
+| `INGEST_BIND_HOST`, `INGEST_PORT` | Where the ingestion API listens. Default `127.0.0.1` and `8100`. |
+| `GROQ_API_KEY`, `INGEST_ANALYSIS_MODEL`, `INGEST_ANALYSIS_ENABLED` | Stage 1 of chunking: an AI model picks how a document is split. Without a key, or with `INGEST_ANALYSIS_ENABLED=false`, fixed rules choose and the upload still works. |
+| `MAX_UPLOAD_MB`, `MAX_DOCS_PER_USER` | 10 MB and 20 documents. Keep `MAX_UPLOAD_MB` equal in the orchestrator, the ingestion service and (as `VITE_MAX_UPLOAD_MB`) the frontend. |
+| `INGEST_SEMANTIC_MAX_CHARS`, `INGEST_SEMANTIC_PERCENTILE`, `INGEST_JOB_TIMEOUT_SECONDS`, `INGEST_TORCH_THREADS` | Tuning. Defaults 80000, 90, 300 and half the CPU cores. |
+| `INGEST_DB_PATH`, `INGEST_UPLOAD_DIR` | Defaults `./ingest.db` and `./data/uploads`. |
+| `INGEST_ALLOW_NO_AUTH` | Development only, localhost only: start without a token. |
+| `INGEST_SERVICE_URL`, `INGEST_TLS_CA` (orchestrator) | Where and how the orchestrator reaches the ingestion API. |
+| `DOC_UPLOAD_RATE_LIMIT` (orchestrator) | Uploads per user per 60 seconds. Default 5. |
+| `DOC_BUDGET_CHARS` (retriever) | How much document text goes into one prompt. Default 12000. |
+
+Ports: Qdrant 6333, retriever 50051, orchestrator 8000, frontend 5173, **ingestion 8100**.
+
 `frontend/.env`
 
 ```env
@@ -645,6 +772,8 @@ CHAT_ENCRYPTION_KEYS=your_generated_key_here
 VITE_API_BASE_URL=http://localhost:8000
 
 VITE_WS_URL=ws://localhost:8000/ws/chat
+
+# VITE_MAX_UPLOAD_MB=10   (optional; keep equal to MAX_UPLOAD_MB in the orchestrator)
 
 ```
 
@@ -674,7 +803,7 @@ From the project root:
 
 ```
 
-This starts Qdrant (Docker) and opens separate windows for the retriever, orchestrator and frontend. The first retriever start is slow because it downloads the embedding models. Wait for `Chat service running on port 50051` before chatting.
+This starts Qdrant (Docker) and opens separate windows for the retriever, the ingestion API, the ingestion worker (at low priority), the orchestrator and the frontend. The first retriever start is slow because it downloads the embedding models. Wait for `Chat service running on port 50051` before chatting.
 
 ### Option B: manually
 
@@ -688,17 +817,25 @@ docker compose up -d
 
 python main.py
 
-# 3. Orchestrator (in backend\orchestrator, venv active)
+# 3. Ingestion API (in backend\ingestion, venv active)
+
+python main.py
+
+# 4. Ingestion worker (in backend\ingestion, venv active, its own window)
+
+python worker.py
+
+# 5. Orchestrator (in backend\orchestrator, venv active)
 
 uvicorn main:app --reload --port 8000
 
-# 4. Frontend (in frontend)
+# 6. Frontend (in frontend)
 
 npm run dev
 
 ```
 
-Start the retriever before the orchestrator. Then open **http://localhost:5173** and create an account. The frontend must run on an address listed in `CORS_ORIGINS` (by default port 5173) because the backend only allows those addresses.
+Start the retriever, the ingestion API and the ingestion worker before the orchestrator. The worker is what turns an uploaded document from `pending` into `ready`. Then open **http://localhost:5173** and create an account. The frontend must run on an address listed in `CORS_ORIGINS` (by default port 5173) because the backend only allows those addresses.
 
 ### Quick checks
 
@@ -706,19 +843,21 @@ Start the retriever before the orchestrator. Then open **http://localhost:5173**
 
 - Qdrant dashboard: http://localhost:6333/dashboard.
 
+- Ingestion health: http://localhost:8100/health should return `{"status": "healthy"}`.
+
 ## Tests
 
 The tests need no Qdrant, Groq key or Docker. The backend tests replace the retriever, Qdrant and the AI with fakes and use a temporary SQLite file per test, so the real `chat.db` files are never touched. The retriever tests use a throw-away encryption key.
 
 ```powershell
 
-# Orchestrator: 46 tests (rate limiter, pagination, WebSocket relay, heartbeat, auth checks)
+# Orchestrator: rate limiter, pagination, WebSocket relay, heartbeat, auth checks, documents (the runner prints the count)
 
 cd backend\orchestrator
 
 pytest
 
-# Retriever: 52 tests (turns, repository, gRPC, encrypted columns)
+# Retriever: turns, repository, gRPC, encrypted columns, document search (the runner prints the count)
 
 cd backend\retriever
 
@@ -728,7 +867,19 @@ pytest
 
 pytest test_retrieval.py
 
-# Frontend: 77 tests (API calls, heartbeat, rate-limit handling, history hooks)
+# Ingestion: parsers, chunking, Qdrant storage, jobs, worker, routes (fake embeddings and a fake Qdrant)
+
+cd backend\ingestion
+
+pytest
+
+# Shared package (crypto, service token, sanitizer)
+
+cd backend\shared_common
+
+pytest
+
+# Frontend: API calls, heartbeat, rate-limit handling, history hooks, documents (upload, polling, selecting) and Sources (the runner prints the count)
 
 cd frontend
 
@@ -796,11 +947,41 @@ npx vitest run src/api.test.ts        # one frontend file
 
 - Check that the orchestrator and the retriever are running and the browser is not showing "API unreachable". The chat list and messages come from the server, so they need both (a failed load shows a Retry button).
 
+**A document is stuck on "Queued" or "Processing"**
+
+- The ingestion **worker** is probably not running. The API only accepts the file; the worker reads and stores it. Start it with `python worker.py` in `backend\ingestion` (or use `run-all.ps1`). A job that was cut off in the middle starts again by itself.
+
+**Uploading says "The document service is unavailable" (or "could not handle the request")**
+
+- The ingestion API is not running at `INGEST_SERVICE_URL` (start it and check http://localhost:8100/health), or `INGEST_SERVICE_TOKEN` is not the same in `backend/orchestrator/.env` and `backend/ingestion/.env`.
+
+**A document ends as "Failed"**
+
+- The message under it says why: the file is damaged or not the type its name says, it has no readable text (scanned pages are not supported, there is no OCR), it is too large or too long, or reading it took too long. Fix or replace the file and upload it again.
+
+**A document keeps showing "Deleting"**
+
+- The search index (Qdrant) could not be reached when you deleted it. Start Qdrant and click the × again.
+
+**The ingestion service fails to start**
+
+- `INGEST_SERVICE_TOKEN` and `CHAT_ENCRYPTION_KEYS` are both required. Use the same `CHAT_ENCRYPTION_KEYS` as the retriever, or document text cannot be read when you ask about it.
+
 ## Known limitations
 
 - **Deleting a chat only hides it in this browser.** There is no delete endpoint yet, so the chat (and its memory) stays on the server and shows up again in other browsers.
 
-- **Retrieved context is not stored.** The "related past messages" under an answer only appear for replies received in the current session, not for messages loaded from history.
+- **Search returns only the top few parts.** A request like "summarize the whole document" only sees the most relevant parts of it.
+
+- **The job queue is a database table** and the worker is a single process. For several workers, move claiming to Redis or a proper queue.
+
+- **Uploaded files sit on disk unencrypted** for the seconds a job runs, then they are deleted. The original files are not kept.
+
+- **Ingestion shares the encryption key with the retriever on purpose** (one trust zone). Keep both in the same secrets manager.
+
+- **The ingestion port must stay on an internal network** (or use TLS), because the ingestion service trusts the `X-User-Id` it receives, like the gRPC port.
+
+- **No OCR, no web pages, no sharing:** scanned PDFs fail with "no readable text", URLs cannot be ingested, and documents cannot be shared between users.
 
 - **The rate limiter is in memory.** It resets when the server restarts and is not shared between workers (use Redis for that).
 

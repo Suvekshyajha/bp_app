@@ -19,6 +19,7 @@ export function DocumentPanel({
   onRemove,
   onDismissError,
   onReload,
+  onClose,
 }: {
   documents: DocumentInfo[];
   status: DocumentListStatus;
@@ -30,20 +31,35 @@ export function DocumentPanel({
   onRemove: (id: string) => void;
   onDismissError: () => void;
   onReload: () => void;
+  onClose?: () => void;
 }) {
   const pickerRef = useRef<HTMLInputElement>(null);
   const limitReached = selectedIds.length >= MAX_SELECTED_DOCUMENTS;
 
   return (
-    <details className="doc-panel">
-      <summary>
-        Documents <span>({documents.length})</span>
-        {selectedIds.length > 0 && (
-          <span className="doc-selected-count">
-            {selectedIds.length} selected for questions
-          </span>
+    <section className="doc-panel" aria-label="Your documents">
+      <header className="doc-panel-head">
+        <div className="doc-panel-title">
+          <strong>Documents</strong>
+          <span className="doc-panel-count">{documents.length}</span>
+          {selectedIds.length > 0 && (
+            <span className="doc-selected-count">
+              {selectedIds.length + " selected for questions"}
+            </span>
+          )}
+        </div>
+
+        {onClose && (
+          <button
+            type="button"
+            className="doc-close"
+            aria-label="Close documents"
+            onClick={onClose}
+          >
+            ×
+          </button>
         )}
-      </summary>
+      </header>
 
       <div className="doc-body">
         <div className="doc-toolbar">
@@ -53,6 +69,7 @@ export function DocumentPanel({
             className="sr-only"
             type="file"
             accept={ACCEPTED_EXTENSIONS.join(",")}
+            tabIndex={-1}
             onChange={(event) => {
               const file = event.target.files?.[0];
               // Allow picking the same file again later
@@ -69,13 +86,13 @@ export function DocumentPanel({
             {uploading ? "Uploading…" : "＋ Upload a document"}
           </button>
           <span className="doc-hint">
-            {ACCEPTED_EXTENSIONS.join(" ")} · up to {MAX_UPLOAD_MB} MB
+            {ACCEPTED_EXTENSIONS.join(" ") + " · up to " + MAX_UPLOAD_MB + " MB"}
           </span>
         </div>
 
         {error && (
           <p className="doc-error" role="alert">
-            {error}{" "}
+            <span>{error}</span>
             <button type="button" className="doc-link" onClick={onDismissError}>
               Dismiss
             </button>
@@ -84,7 +101,7 @@ export function DocumentPanel({
 
         {status === "error" && (
           <p className="doc-error" role="alert">
-            Could not load your documents.{" "}
+            <span>Could not load your documents.</span>
             <button type="button" className="doc-link" onClick={onReload}>
               Try again
             </button>
@@ -94,67 +111,72 @@ export function DocumentPanel({
         {status === "loading" && <p className="doc-hint">Loading…</p>}
 
         {status === "ready" && documents.length === 0 && (
-          <p className="doc-hint">
+          <p className="doc-empty">
             No documents yet. Upload one, then tick it to ask about it.
           </p>
         )}
 
-        <ul className="doc-list">
-          {documents.map((document) => {
-            const ready = document.status === "ready";
-            const selected = selectedIds.includes(document.id);
-            // A tick is only offered for a ready document; the 6th is refused
-            const canTick = ready && (selected || !limitReached);
+        {documents.length > 0 && (
+          <ul className="doc-list">
+            {documents.map((document) => {
+              const ready = document.status === "ready";
+              const selected = selectedIds.includes(document.id);
+              // A tick is only offered for a ready document; the 6th is refused
+              const canTick = ready && (selected || !limitReached);
 
-            return (
-              <li className="doc-item" key={document.id}>
-                <label className="doc-check">
-                  <input
-                    type="checkbox"
-                    checked={selected}
-                    disabled={!canTick}
-                    onChange={() => onToggle(document.id)}
-                    aria-label={"Ask about " + document.filename}
-                  />
-                </label>
-
-                <div className="doc-info">
-                  <span className="doc-name" title={document.filename}>
-                    {document.filename}
-                  </span>
-
-                  <span className={"doc-badge is-" + document.status}>
-                    {STATUS_LABELS[document.status]}
-                  </span>
-
-                  {document.status === "failed" && (
-                    <span className="doc-failure">
-                      {describeDocumentError(document.error)}
-                    </span>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  className="doc-delete"
-                  aria-label={"Delete " + document.filename}
-                  title="Delete document"
-                  disabled={document.status === "deleting"}
-                  onClick={() => onRemove(document.id)}
+              return (
+                <li
+                  className={"doc-item" + (selected ? " is-selected" : "")}
+                  key={document.id}
                 >
-                  ×
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                  <label className="doc-check">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={!canTick}
+                      onChange={() => onToggle(document.id)}
+                      aria-label={"Ask about " + document.filename}
+                    />
+                  </label>
+
+                  <div className="doc-info">
+                    <span className="doc-name" title={document.filename}>
+                      {document.filename}
+                    </span>
+
+                    <span className={"doc-badge is-" + document.status}>
+                      {STATUS_LABELS[document.status]}
+                    </span>
+
+                    {document.status === "failed" && (
+                      <span className="doc-failure">
+                        {describeDocumentError(document.error)}
+                      </span>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="doc-delete"
+                    aria-label={"Delete " + document.filename}
+                    title="Delete document"
+                    disabled={document.status === "deleting"}
+                    onClick={() => onRemove(document.id)}
+                  >
+                    ×
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
 
         {limitReached && (
           <p className="doc-hint">
-            You can ask about up to {MAX_SELECTED_DOCUMENTS} documents at once.
+            {"You can ask about up to " + MAX_SELECTED_DOCUMENTS + " documents at once."}
           </p>
         )}
       </div>
-    </details>
+    </section>
   );
 }

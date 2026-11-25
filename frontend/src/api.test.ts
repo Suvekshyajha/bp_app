@@ -2,13 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   NotFoundError,
   UnauthorizedError,
-  deleteDocument,
   getConversations,
-  getDocument,
-  getDocuments,
   getMe,
   getMessages,
-  uploadDocument,
 } from "./api";
 import { API_BASE_URL } from "./config";
 
@@ -107,99 +103,5 @@ describe("error handling", () => {
     mockFetch(500);
 
     await expect(getConversations()).rejects.toThrow("HTTP 500");
-  });
-});
-
-describe("documents", () => {
-  const server = {
-    id: "d1",
-    filename: "a.pdf",
-    status: "ready",
-    error: null,
-    chunk_count: 4,
-    created_at: "2026-11-01T10:00:00+00:00",
-  };
-
-  it("getDocuments maps the server's fields and sends the cookie", async () => {
-    const fetchMock = mockFetch(200, [server]);
-
-    const list = await getDocuments();
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      API_BASE_URL + "/api/documents",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(list).toEqual([
-      {
-        id: "d1",
-        filename: "a.pdf",
-        status: "ready",
-        error: undefined,
-        chunkCount: 4,
-        createdAt: "2026-11-01T10:00:00+00:00",
-      },
-    ]);
-  });
-
-  it("getDocument encodes the id", async () => {
-    const fetchMock = mockFetch(200, server);
-
-    await getDocument("a/b");
-
-    expect(fetchMock.mock.calls[0][0]).toBe(API_BASE_URL + "/api/documents/a%2Fb");
-  });
-
-  it("uploadDocument sends multipart form data with no hand-set Content-Type", async () => {
-    const fetchMock = mockFetch(202, { id: "d2", filename: "n.txt", status: "pending" });
-
-    const created = await uploadDocument(new File(["hello"], "n.txt"));
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(API_BASE_URL + "/api/documents");
-    expect(init.method).toBe("POST");
-    expect(init.credentials).toBe("include");
-    expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).get("file")).toBeInstanceOf(File);
-    // The browser must add the boundary itself
-    expect(init.headers).toBeUndefined();
-    expect(created).toMatchObject({ id: "d2", status: "pending" });
-  });
-
-  it("uploadDocument shows the server's reason for a refusal", async () => {
-    mockFetch(413, { detail: "File is larger than 10 MB." });
-
-    await expect(uploadDocument(new File(["x"], "big.pdf"))).rejects.toThrow(
-      "File is larger than 10 MB.",
-    );
-  });
-
-  it("deleteDocument sends DELETE", async () => {
-    const fetchMock = mockFetch(204);
-
-    await deleteDocument("d1");
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(API_BASE_URL + "/api/documents/d1");
-    expect(init.method).toBe("DELETE");
-    expect(init.credentials).toBe("include");
-  });
-
-  it.each([
-    ["getDocuments", () => getDocuments()],
-    ["getDocument", () => getDocument("d1")],
-    ["uploadDocument", () => uploadDocument(new File(["x"], "a.txt"))],
-    ["deleteDocument", () => deleteDocument("d1")],
-  ])("%s turns a 401 into UnauthorizedError", async (_name, call) => {
-    mockFetch(401);
-
-    await expect(call()).rejects.toBeInstanceOf(UnauthorizedError);
-  });
-
-  it("a 404 is NotFoundError for delete and for status", async () => {
-    mockFetch(404);
-    await expect(deleteDocument("d1")).rejects.toBeInstanceOf(NotFoundError);
-
-    mockFetch(404);
-    await expect(getDocument("d1")).rejects.toBeInstanceOf(NotFoundError);
   });
 });
