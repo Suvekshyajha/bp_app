@@ -1,0 +1,30 @@
+# Build context for every backend Dockerfile is the repository root.
+# Only what is listed after "!" is sent to Docker.
+*
+!backend/
+
+# Never put secrets or local data into an image
+**/.env
+**/.env.*
+**/*.bak*
+**/certs
+**/*.pem
+**/*.key
+**/*.crt
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/data
+**/*.log
+
+# Local environments and generated files
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/tests
+**/*.egg-info
+**/build
+**/*_pb2.py
+**/*_pb2_grpc.py
