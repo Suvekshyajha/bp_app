@@ -13,23 +13,22 @@ nodes; `sys.modules["turn"]` can point somewhere else by then).
     START -> check_replay --replay--> replay -> END
                   |fresh
                   v
-    cut_old -> load_history -> plan_search -> retrieve_chat -> retrieve_docs
-            -> emit_context -> save_question -> generate -> END
+    cut_old -> load_history -> plan_search --+--> retrieve_chat --+
+                                             |                    +--> emit_context
+                                             +--> retrieve_docs -+          |
+                                                                            v
+                                                          save_question -> generate -> END
+
+The two searches run at the same time (they write different state keys, so
+no reducer is needed) and emit_context waits for both.
 """
 
 from langgraph.graph import END, START, StateGraph
 
-# Straight line of the "fresh" path, in order
-FRESH_PATH = [
-    "cut_old",
-    "load_history",
-    "plan_search",
-    "retrieve_chat",
-    "retrieve_docs",
-    "emit_context",
-    "save_question",
-    "generate",
-]
+# The "fresh" path, in order. The two searches in the middle run in parallel.
+BEFORE_SEARCH = ["cut_old", "load_history", "plan_search"]
+SEARCHES = ["retrieve_chat", "retrieve_docs"]
+AFTER_SEARCH = ["emit_context", "save_question", "generate"]
 
 
 def build(turn=None):
@@ -64,7 +63,18 @@ def build(turn=None):
     )
     g.add_edge("replay", END)
 
-    for first, second in zip(FRESH_PATH, FRESH_PATH[1:]):
+    for first, second in zip(BEFORE_SEARCH, BEFORE_SEARCH[1:]):
+        g.add_edge(first, second)
+
+    # Fan out: both searches start as soon as plan_search is done...
+    for search in SEARCHES:
+        g.add_edge(BEFORE_SEARCH[-1], search)
+
+    # ...and emit_context starts only when BOTH have finished (a list of
+    # sources means "wait for all of them").
+    g.add_edge(SEARCHES, AFTER_SEARCH[0])
+
+    for first, second in zip(AFTER_SEARCH, AFTER_SEARCH[1:]):
         g.add_edge(first, second)
 
     g.add_edge("generate", END)
