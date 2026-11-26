@@ -11,6 +11,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
 import { DocumentPanel } from "../components/DocumentPanel";
+import { Toasts } from "../components/toasts";
 import { STATUS_LABELS, isBusy } from "../components/documentStatus";
 import { ACCEPTED_EXTENSIONS } from "../services/documentLimits";
 
@@ -66,6 +67,8 @@ export function ChatPage({
     remove: removeDocument,
     refresh: reloadDocuments,
     dismissError: dismissDocumentError,
+    notices: documentNotices,
+    dismissNotice: dismissDocumentNotice,
   } = useDocuments(onLogout);
 
   // The documents the user ticked. Only ready documents count, so a document
@@ -711,6 +714,8 @@ export function ChatPage({
             {`You are sending messages too quickly. You can send again in ${cooldownSeconds}s.`}
           </ErrorBanner>
         )}
+
+        <Toasts notices={documentNotices} onDismiss={dismissDocumentNotice} />
 
         <MessageList
           key={selectedId}
