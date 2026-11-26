@@ -6,12 +6,14 @@ turn.py is found here with a clear message.
 """
 
 import asyncio
+import logging
 
 import pytest
 
 import repository
 import turn
 import turn_graph
+from common.log import get_request_id, set_request_id
 from conftest import drain_background
 from models import Message
 from turn import Token, Done, run_turn
@@ -46,8 +48,9 @@ def test_the_graph_has_exactly_the_expected_edges():
         ("replay", "__end__", False),
         ("cut_old", "load_history", False),
         ("load_history", "plan_search", False),
-        ("plan_search", "retrieve_chat", False),
-        ("retrieve_chat", "retrieve_docs", False),
+        ("plan_search", "retrieve_chat", False),   # fan out: both searches start together
+        ("plan_search", "retrieve_docs", False),
+        ("retrieve_chat", "emit_context", False),  # join: emit_context waits for both
         ("retrieve_docs", "emit_context", False),
         ("emit_context", "save_question", False),
         ("save_question", "generate", False),
@@ -56,12 +59,26 @@ def test_the_graph_has_exactly_the_expected_edges():
 
 
 def test_the_question_is_saved_after_both_searches_and_before_the_answer():
-    path = turn_graph.FRESH_PATH
+    drawn = turn_graph.get_graph().get_graph()
+    edges = {(e.source, e.target) for e in drawn.edges}
 
-    assert path.index("retrieve_chat") < path.index("save_question")
-    assert path.index("retrieve_docs") < path.index("save_question")
-    assert path.index("emit_context") < path.index("save_question")
-    assert path.index("save_question") < path.index("generate")
+    # Both searches feed emit_context, and only then is the question saved
+    assert ("retrieve_chat", "emit_context") in edges
+    assert ("retrieve_docs", "emit_context") in edges
+    assert ("emit_context", "save_question") in edges
+    assert ("save_question", "generate") in edges
+
+    # Nothing reaches save_question or generate except through that chain
+    assert {s for s, t in edges if t == "save_question"} == {"emit_context"}
+    assert {s for s, t in edges if t == "generate"} == {"save_question"}
+
+
+def test_the_two_searches_have_no_edge_between_them():
+    drawn = turn_graph.get_graph().get_graph()
+    edges = {(e.source, e.target) for e in drawn.edges}
+
+    assert ("retrieve_chat", "retrieve_docs") not in edges
+    assert ("retrieve_docs", "retrieve_chat") not in edges
 
 
 # ---------- 2. routing ----------
@@ -315,3 +332,187 @@ def test_run_turn_gives_the_model_chat_results_and_document_excerpts_separately(
 
     # The client still gets both in ONE Context event, chat first
     assert events[0].results == [chat_hit, doc_hit]
+
+
+# ---------- 7. the two searches run at the same time ----------
+
+def test_chat_search_and_document_search_really_run_in_parallel(
+    session_factory, model, indexed, retrieved, doc_search, monkeypatch
+):
+    import threading
+
+    # Each search waits for the other one. If the graph ran them one after the
+    # other, the first would time out alone (and its error is swallowed, like
+    # any search failure), so `met` would stay short.
+    barrier = threading.Barrier(2, timeout=3)
+    met = []
+
+    def meet(name):
+        barrier.wait()
+        met.append(name)
+
+    chat_search = retrieved.__call__
+    original_docs = doc_search.retrieve_document_chunks
+
+    def chat(**kwargs):
+        meet("chat")
+        return chat_search(**kwargs)
+
+    def docs(**kwargs):
+        meet("docs")
+        return original_docs(**kwargs)
+
+    monkeypatch.setattr(turn, "retrieve_messages", chat)
+    monkeypatch.setattr(turn.doc_retrieval, "retrieve_document_chunks", docs)
+
+    async def scenario():
+        events = [
+            event async for event in run_turn(ALICE, CHAT, "hello", document_ids=["d1"])
+        ]
+        await drain_background()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert sorted(met) == ["chat", "docs"]
+    assert events[-1].answer == "Hello"
+
+
+def test_parallel_searches_still_share_one_embedding_and_one_context_event(
+    session_factory, model, indexed, retrieved, doc_search
+):
+    chat_hit = hit("m1", "user", "an older message")
+    doc_hit = hit("d1", None, "an excerpt")
+    retrieved.results = [chat_hit]
+    doc_search.results = [doc_hit]
+
+    async def scenario():
+        events = [
+            event async for event in run_turn(ALICE, CHAT, "hello", document_ids=["d1"])
+        ]
+        await drain_background()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert doc_search.embeds == ["hello"]                       # embedded once
+    assert [type(e).__name__ for e in events].count("Context") == 1
+    assert events[0].results == [chat_hit, doc_hit]             # chat first, then documents
+
+
+# ---------- 8. one log line per node ----------
+
+class NodeLogs(logging.Filter):
+    """Collects the node log lines together with the request id that was
+    active at the moment each line was written."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def filter(self, record):
+        if record.getMessage().startswith("node="):
+            self.lines.append((record.getMessage(), get_request_id()))
+
+        return True
+
+
+@pytest.fixture
+def node_logs():
+    logs = NodeLogs()
+    logger = logging.getLogger("turn")
+    previous = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addFilter(logs)
+
+    yield logs
+
+    logger.removeFilter(logs)
+    logger.setLevel(previous)
+
+
+def node_names(logs):
+    return [line.split()[0].removeprefix("node=") for line, _ in logs.lines]
+
+
+def test_a_fresh_turn_logs_one_line_per_node(session_factory, model, indexed, retrieved, node_logs):
+    async def scenario():
+        await collect_all()
+        await drain_background()
+
+    asyncio.run(scenario())
+
+    names = node_names(node_logs)
+
+    assert names[:4] == ["check_replay", "cut_old", "load_history", "plan_search"]
+    assert set(names[4:6]) == {"retrieve_chat", "retrieve_docs"}  # either order: they run together
+    assert names[6:] == ["emit_context", "save_question", "generate"]
+
+
+def test_a_replayed_turn_logs_only_the_check_and_the_replay(session_factory, model, indexed, retrieved, node_logs):
+    async def scenario():
+        await collect_all(user_message_id=QUESTION_ID)
+        await drain_background()
+        node_logs.lines.clear()
+        await collect_all(user_message_id=QUESTION_ID)
+
+    asyncio.run(scenario())
+
+    assert node_names(node_logs) == ["check_replay", "replay"]
+    assert len(model.calls) == 1
+
+
+def test_the_request_id_reaches_every_node(session_factory, model, indexed, retrieved, node_logs):
+    async def scenario():
+        set_request_id("req-abc123")
+        await collect_all()
+        await drain_background()
+
+    asyncio.run(scenario())
+
+    assert len(node_logs.lines) == 9
+    assert {rid for _, rid in node_logs.lines} == {"req-abc123"}
+
+
+def test_node_logs_have_milliseconds_and_never_the_question_or_the_answer(
+    session_factory, model, indexed, retrieved, node_logs
+):
+    async def scenario():
+        await collect_all(query="my secret question")
+        await drain_background()
+
+    asyncio.run(scenario())
+
+    for line, _ in node_logs.lines:
+        assert " ms=" in line and line.split(" ms=")[1].isdigit()
+        assert "secret" not in line and "Hello" not in line
+
+
+def test_a_stopped_turn_still_logs_the_generate_node(session_factory, model, indexed, events, node_logs):
+    model.tokens = ["a", "b", "c"]
+    model.block_after = 1
+    state = generate_state()
+
+    async def scenario():
+        task = asyncio.create_task(turn.node_generate(state))
+
+        while not events:
+            await asyncio.sleep(0.01)
+
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await drain_background()
+
+    asyncio.run(scenario())
+
+    assert node_names(node_logs) == ["generate"]
+
+
+async def collect_all(query="hello", user_message_id=None):
+    return [
+        event
+        async for event in run_turn(ALICE, CHAT, query, user_message_id=user_message_id)
+    ]
