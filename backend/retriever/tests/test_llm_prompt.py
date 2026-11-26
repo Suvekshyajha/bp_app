@@ -151,3 +151,50 @@ def test_the_system_prompt_says_searched_excerpts_are_not_a_selection():
 
     assert "has not selected a document" in lowered
     assert "do not pick one document yourself" in lowered
+
+
+# ---------- citation labels ----------
+
+def doc(filename, content):
+    return {"payload": {"filename": filename, "chunk_index": 0, "content": content}}
+
+
+def test_every_excerpt_starts_with_its_citation_label():
+    block = llm.build_document_block([doc("a.pdf", "alpha"), doc("b.pdf", "beta")])
+
+    assert block.startswith("[C1] [a.pdf, part 1] alpha")
+    assert "[C2] [b.pdf, part 1] beta" in block
+
+
+def test_a_label_is_the_position_in_the_list_even_when_an_excerpt_is_empty():
+    """The website counts the same list, so the numbers must not move up."""
+
+    block = llm.build_document_block([doc("a.pdf", "   "), doc("b.pdf", "beta")])
+
+    assert block.startswith("[C2] [b.pdf, part 1] beta")
+
+
+def test_the_system_prompt_asks_for_label_citations():
+    assert "[C1]" in SYSTEM_PROMPT
+    assert "[Source: Research_Paper.pdf]" not in SYSTEM_PROMPT
+
+
+def test_old_labels_are_removed_from_history_and_past_messages():
+    """An old answer's [C1] pointed at that turn's excerpts, not these."""
+
+    old = "Revenue grew [C1]. Costs fell [C2, C3]【C4†L1】."
+    history = [{"role": "assistant", "content": old}]
+    context = [{"payload": {"role": "assistant", "content": old}}]
+
+    messages = build_messages("and now?", context, history)
+
+    assert messages[1]["content"] == "Revenue grew. Costs fell."
+    assert "[assistant] Revenue grew. Costs fell." in last_user_message(messages)
+
+
+def test_a_user_message_in_history_is_not_changed():
+    history = [{"role": "user", "content": "What is [C1] in my notes?"}]
+
+    messages = build_messages("hi", [], history)
+
+    assert messages[1]["content"] == "What is [C1] in my notes?"

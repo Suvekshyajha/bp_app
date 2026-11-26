@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ChatMessage } from "../types";
+import type { ChatMessage, RetrievedMessage } from "../types";
+import { Citation } from "./Citation";
 import { ContextPanel } from "./ContextPanel";
+import { documentSources, hasOldStyleCitations, remarkCitations } from "./citations";
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -83,11 +85,29 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// The excerpts the shown answer may cite. A context, so the Markdown
+// components below never change and an open popover survives a re-render.
+const SourcesContext = createContext<RetrievedMessage[]>([]);
+
+// <cite> elements are only made by remarkCitations: raw HTML in an answer is
+// never rendered
+function CitationElement(props: ComponentPropsWithoutRef<"cite">) {
+  const data = props as { "data-cite"?: string; "data-claim"?: string };
+  const sources = useContext(SourcesContext);
+  const number = Number(data["data-cite"]);
+  const source = sources[number - 1]?.payload;
+
+  if (!source) return null;
+
+  return <Citation number={number} claim={data["data-claim"] ?? ""} source={source} />;
+}
+
 // Model output is untrusted. The browser loads an image on its own, with no
 // click, so an image address can carry private text out. Images are never
 // rendered, and a link is shown as plain text plus its real address, so the
 // user sees where it goes and nothing is loaded or clickable.
 const SAFE_MARKDOWN_COMPONENTS: Components = {
+  cite: CitationElement,
   img: ({ alt }) => <span>{alt ? `[image: ${alt}]` : "[image removed]"}</span>,
   a: ({ href, children }) => {
     // A bare URL (autolinked by remark-gfm) already shows its own address
@@ -117,6 +137,7 @@ export function MessageBubble({
   canRegenerate: boolean;
 }) {
   const isUser = message.role === "user";
+  const sources = documentSources(message.context);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -182,9 +203,14 @@ export function MessageBubble({
               <p className="plain-message">{message.content}</p>
             ) : (
               <div className="markdown-content">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={SAFE_MARKDOWN_COMPONENTS}>
-                  {message.content}
-                </ReactMarkdown>
+                <SourcesContext.Provider value={sources}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, [remarkCitations, sources.length]]}
+                    components={SAFE_MARKDOWN_COMPONENTS}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                </SourcesContext.Provider>
               </div>
             )}
             <div className="message-meta">
@@ -233,7 +259,8 @@ export function MessageBubble({
           </div>
         )}
 
-        {!isUser && <ContextPanel items={message.context ?? []} />}
+        {/* Only old answers: they name files in the text and have no markers */}
+        {!isUser && hasOldStyleCitations(message.content) && <ContextPanel items={message.context ?? []} />}
       </div>
       {isUser && <div className="user-avatar" aria-hidden="true">You</div>}
     </article>

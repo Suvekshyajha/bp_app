@@ -44,9 +44,9 @@ SYSTEM_PROMPT = (
     "<past_messages> tags. Use them only as reference information when "
     "relevant to the user's current question.\n"
     "- You may receive excerpts from documents inside "
-    "<document_excerpts> tags. Each document excerpt starts with its file "
-    "name and part number. Use these excerpts to answer questions about "
-    "the user's documents.\n"
+    "<document_excerpts> tags. Each document excerpt starts with its "
+    "citation label, file name and part number. Use these excerpts to "
+    "answer questions about the user's documents.\n"
     "- You may also receive a list of the user's document names inside "
     "<available_documents> tags. It lists names only and holds no document "
     "content. Use it only when the user asks about their documents or when "
@@ -132,26 +132,25 @@ SYSTEM_PROMPT = (
     "or conversations.\n\n"
 
     "Document citation rules:\n"
-    "- Whenever you use information from a document excerpt to answer "
-    "the user's question, you MUST provide a citation identifying the "
-    "source document.\n"
-    "- Include the exact document filename in the citation.\n"
-    "- Place the citation immediately after the sentence or paragraph "
-    "containing information taken from that document.\n"
-    "- If information comes from multiple documents, cite each relevant "
-    "document separately.\n"
-    "- Do not cite documents that were not provided in the current "
-    "document context.\n"
-    "- Never invent document names, page numbers, section numbers, "
-    "or line numbers.\n"
-    "- If page numbers or other location information are available in "
-    "the provided excerpts, include them in the citation.\n"
+    "- Every document excerpt starts with a citation label such as [C1] "
+    "or [C2].\n"
+    "- Whenever you use information from a document excerpt, you MUST cite "
+    "it by writing that excerpt's label, for example: Revenue grew by five "
+    "percent [C1].\n"
+    "- Place the label immediately after the sentence containing the "
+    "information, before moving on to the next sentence.\n"
+    "- If a sentence uses several excerpts, write each label separately, "
+    "like this: [C1][C3].\n"
+    "- Use only labels that appear in the current document excerpts. Labels "
+    "from earlier answers are no longer valid.\n"
+    "- Do not write file names, page numbers or a source list as the "
+    "citation. The application shows the source when the label is "
+    "clicked.\n"
+    "- Never invent a label.\n"
     "- If the answer is based entirely on general knowledge rather than "
     "document content, do not create a document citation.\n"
     "- If you cannot identify the source of a statement, do not falsely "
-    "attribute it to a document.\n"
-    "- Make citations clear and readable, for example: "
-    "[Source: Research_Paper.pdf].\n\n"
+    "attribute it to a document.\n\n"
 
     "Response rules:\n"
     "- Answer the user's latest question directly and stay relevant.\n"
@@ -189,6 +188,19 @@ def _strip_past_messages_tags(text: str) -> str:
     return text
 
 
+# [C1], [C1, C2] and the 【C1†L1-L3】 style some models write, with the space before
+_CITATION_LABEL = re.compile(
+    r"[ \t]*(?:\[|【)\s*C\d+(?:\s*[,;]\s*C\d+)*\s*(?:†[^\]】]*)?(?:\]|】)"
+)
+
+
+def _strip_citation_labels(text: str) -> str:
+    """Remove labels from an earlier answer: they pointed at the excerpts of
+    that turn, and the same numbers mean other excerpts now."""
+
+    return _CITATION_LABEL.sub("", text)
+
+
 def build_context_block(context: list[dict]) -> str:
     """Format retrieved messages as a delimited block of reference data."""
 
@@ -202,6 +214,9 @@ def build_context_block(context: list[dict]) -> str:
         # Stop a stored message from closing (or reopening) the tag
         content = _strip_past_messages_tags(content)
 
+        if role == "assistant":
+            content = _strip_citation_labels(content)
+
         lines.append(f"[{role}] {content}")
 
     return "\n\n".join(lines)
@@ -210,8 +225,9 @@ def build_context_block(context: list[dict]) -> str:
 def build_document_block(documents: list[dict], budget_chars: int | None = None) -> str:
     """Format document excerpts as a delimited block of reference data.
 
-    One line per excerpt: [report.pdf, part 3] text. `documents` is best
-    match first. Excerpts are added in that order until `budget_chars` is
+    One line per excerpt: [C1] [report.pdf, part 3] text. The number is the
+    excerpt's position in `documents` (from 1): the website counts the same
+    list to find the source of a citation. `documents` is best match first. Excerpts are added in that order until `budget_chars` is
     used up (the first one is cut to fit if it alone is too long), so the
     weakest matches are the ones left out.
     """
@@ -220,7 +236,7 @@ def build_document_block(documents: list[dict], budget_chars: int | None = None)
     lines: list[str] = []
     used = 0
 
-    for item in documents:
+    for number, item in enumerate(documents, start=1):
         payload = item.get("payload", {})
 
         # clean_for_prompt removes the delimiter tags of every block, so an
@@ -232,7 +248,7 @@ def build_document_block(documents: list[dict], budget_chars: int | None = None)
         if not content:
             continue
 
-        line = f"[{filename}, part {part}] {content}"
+        line = f"[C{number}] [{filename}, part {part}] {content}"
         room = budget - used
 
         if room <= 0:
@@ -343,7 +359,12 @@ def build_messages(
     remaining = PROMPT_BUDGET_CHARS - len(SYSTEM_PROMPT) - len(user_content)
 
     for turn in trim_history(usable, remaining):
-        messages.append({"role": turn["role"], "content": turn["content"]})
+        content = turn["content"]
+
+        if turn["role"] == "assistant":
+            content = _strip_citation_labels(content)
+
+        messages.append({"role": turn["role"], "content": content})
 
     messages.append({"role": "user", "content": user_content})
 
