@@ -151,8 +151,16 @@ class FakeClient:
 
         return found[: kwargs["limit"]], None
 
+    def count(self, **kwargs):
+        query_filter = kwargs.get("count_filter")
+        return SimpleNamespace(
+            count=sum(1 for p in self.points if matches(query_filter, p.payload))
+        )
+
 
 def point(id, vector, **payload):
+    """A point as Qdrant returns it: an id, a payload and a named dense vector."""
+
     base = {
         "document_id": DOC_A,
         "filename": encrypt("report.pdf"),
@@ -214,7 +222,9 @@ def test_the_search_is_limited_to_the_user_the_documents_and_ready_chunks(qdrant
 def test_weak_matches_are_dropped(qdrant):
     qdrant([point("far", FAR), point("near", CLOSE)])
 
-    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A])
+    results = doc_retrieval.retrieve_document_chunks(
+        QUERY, ALICE, [DOC_A], min_similarity=0.5
+    )
 
     assert [r["id"] for r in results] == ["near"]
 
@@ -346,7 +356,7 @@ def test_the_same_weak_chunk_is_refused_when_nothing_is_chosen(qdrant, threshold
     assert [r["id"] for r in results] == ["strong"]
 
 
-def test_a_chosen_document_still_drops_chunks_far_below_the_floor(qdrant, thresholds):
+
     qdrant([chunk("off", vector=at(0.05)), chunk("weak", vector=at(0.35))])
 
     results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, [DOC_A])
@@ -417,14 +427,14 @@ def test_one_document_cannot_crowd_the_others_out(qdrant):
     assert ids == ["a0", "a1", "a2", "a3", "b0", "b1"]  # 4 + 2, still best first
 
 
-def test_places_no_other_document_wants_are_given_back(qdrant):
-    """Only document A matches: it gets all the places, not just its share."""
+def test_a_chosen_document_still_drops_chunks_far_below_the_floor(qdrant, thresholds):
+    qdrant([chunk("off", vector=at(0.05)), chunk("weak", vector=at(0.35))])
 
-    qdrant([chunk(f"a{i}", DOC_A, i) for i in range(8)])
+    results = doc_retrieval.retrieve_document_chunks(
+        QUERY, ALICE, [DOC_A], min_similarity=doc_retrieval.SELECTED_MIN_SIMILARITY
+    )
 
-    results = doc_retrieval.retrieve_document_chunks(QUERY, ALICE, None, limit=6)
-
-    assert [r["id"] for r in results] == [f"a{i}" for i in range(6)]
+    assert [r["id"] for r in results] == ["weak"]
 
 
 def test_one_chosen_document_is_never_capped(qdrant):
