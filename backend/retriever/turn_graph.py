@@ -4,8 +4,11 @@ Only the wiring lives here. Every node function is in turn.py on purpose: the
 tests replace names inside the `turn` module (stream_response, retrieve_messages,
 doc_retrieval.* ...), and a node must see the replacement when it runs.
 
-turn.py imports this file inside run_turn (not at the top), so the two files
-never import each other while loading.
+turn.py imports this file inside run_turn (not at the top) and passes its OWN
+node functions to get_graph(). This file never does `import turn` at load
+time, so the nodes always belong to the module whose run_turn is running (the
+tests load their own copy of `turn` with fakes, and that copy must use its own
+nodes; `sys.modules["turn"]` can point somewhere else by then).
 
     START -> check_replay --replay--> replay -> END
                   |fresh
@@ -15,8 +18,6 @@ never import each other while loading.
 """
 
 from langgraph.graph import END, START, StateGraph
-
-import turn
 
 # Straight line of the "fresh" path, in order
 FRESH_PATH = [
@@ -31,9 +32,16 @@ FRESH_PATH = [
 ]
 
 
-def build():
+def build(turn=None):
     """Build and compile the graph. No checkpointer: SQLite and Qdrant stay
-    the only places where anything is saved."""
+    the only places where anything is saved.
+
+    `turn` is anything that has the node functions, `TurnState` and
+    `route_after_check` as attributes (default: the `turn` module on the
+    import path)."""
+
+    if turn is None:
+        import turn
 
     g = StateGraph(turn.TurnState)
 
@@ -64,15 +72,21 @@ def build():
     return g.compile()
 
 
-_graph = None
+# One compiled graph per `turn` module. Normally there is exactly one module,
+# so the graph is built once and reused for every question.
+_graphs: dict = {}
 
 
-def get_graph():
+def get_graph(turn=None):
     """The compiled graph, built once and reused for every question."""
 
-    global _graph
+    if turn is None:
+        import turn
 
-    if _graph is None:
-        _graph = build()
+    # The nodes' own module dict says which copy of turn.py they belong to
+    key = id(turn.node_generate.__globals__)
 
-    return _graph
+    if key not in _graphs:
+        _graphs[key] = (turn, build(turn))  # keep `turn` alive so its id is not reused
+
+    return _graphs[key][1]

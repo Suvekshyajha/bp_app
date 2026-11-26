@@ -12,6 +12,7 @@ saved, because the saving runs shielded in the `finally` block.
 
 import asyncio
 import logging
+import types
 import uuid
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -800,6 +801,22 @@ async def _fresh_turn(
     )
 
 
+def _graph_nodes() -> types.SimpleNamespace:
+    """This module's graph pieces, handed to turn_graph.get_graph().
+
+    Taken from this module's own globals on purpose (not `import turn`): the
+    nodes must be the ones that live next to the patched names.
+    """
+
+    names = globals()
+
+    return types.SimpleNamespace(
+        TurnState=names["TurnState"],
+        route_after_check=names["route_after_check"],
+        **{name: fn for name, fn in names.items() if name.startswith("node_")},
+    )
+
+
 async def run_turn(
     user_id: str,
     conversation_id: str,
@@ -850,21 +867,20 @@ async def run_turn(
         await _claim(key)
 
     try:
-        if key and not regenerate:
-            state = await asyncio.to_thread(
-                repository.get_turn_state,
-                user_id,
-                conversation_id,
-                user_message_id,
-            )
+        # Imported here, not at the top: turn_graph imports this module
+        from turn_graph import get_graph
 
-            if state and state["answer"] and state["query"] == query:
-                for event in _replay(user_message_id, state["answer"]):
-                    yield event
-                return
+        state = {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "query": query,
+            "user_message_id": user_message_id,
+            "regenerate": regenerate,
+            "document_ids": document_ids,
+        }
 
         async with aclosing(
-            _fresh_turn(user_id, conversation_id, query, user_message_id, document_ids)
+            get_graph(_graph_nodes()).astream(state, stream_mode="custom")
         ) as events:
             async for event in events:
                 yield event
