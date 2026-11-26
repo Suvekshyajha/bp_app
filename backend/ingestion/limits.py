@@ -48,7 +48,8 @@ PARSE_TIMEOUT_SECONDS = 60
 
 # ---------- Chunking ----------
 
-# bge-base reads at most 512 tokens, so no chunk may pass this (decision D8).
+# Chunks stay small so a search finds a precise passage (decision D8, first set
+# for the 512 token limit of the earlier model).
 HARD_MAX_CHUNK_TOKENS = 480
 
 # My own choice (the plan names the error code but no number): stops one

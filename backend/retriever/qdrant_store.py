@@ -5,6 +5,7 @@ from crypto import encrypt
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient, models
 
+from common.settings import DENSE_DIM, MESSAGES_COLLECTION
 from embeddings import embed_messages
 
 
@@ -20,7 +21,7 @@ if not QDRANT_URL:
     raise ValueError("QDRANT_URL is not configured")
 
 
-COLLECTION_NAME = "chat_messages"
+COLLECTION_NAME = MESSAGES_COLLECTION
 
 client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=30)
 
@@ -48,7 +49,7 @@ def create_collection() -> None:
         collection_name=COLLECTION_NAME,
         vectors_config={
             "dense": models.VectorParams(
-                size=768,
+                size=DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
         },

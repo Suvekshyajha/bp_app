@@ -1,6 +1,6 @@
 """One token counter for all of ingestion.
 
-Production counts with the bge tokenizer (common.embeddings.count_tokens).
+Production counts with the dense model's tokenizer (common.embeddings.count_tokens).
 That import loads a model, so it happens on first use and never at import,
 and tests replace the counter with a cheap one through `set_counter()`.
 """

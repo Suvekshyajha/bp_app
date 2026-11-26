@@ -17,6 +17,7 @@ services:
     build:
       context: ../..
       dockerfile: backend/retriever/Dockerfile
+      network: host
     restart: unless-stopped
     depends_on: [qdrant]
     environment:
@@ -34,6 +35,7 @@ services:
     build:
       context: ../..
       dockerfile: backend/ingestion/Dockerfile
+      network: host
     restart: unless-stopped
     depends_on: [qdrant]
     environment:
@@ -51,6 +53,7 @@ services:
     build:
       context: ../..
       dockerfile: backend/orchestrator/Dockerfile
+      network: host
     restart: unless-stopped
     depends_on: [retriever, ingestion]
     environment:
@@ -64,6 +67,14 @@ services:
       COOKIE_SAMESITE: none
     ports:
       - "${HOST_PORT:-8000}:8000"
+
+# Codespaces drops packets near the usual 1500 bytes: connections then hang
+# while they are being opened. Smaller packets get through. (Image builds
+# use the host network, which start.sh sets to the same size.)
+networks:
+  default:
+    driver_opts:
+      com.docker.network.driver.mtu: "1400"
 
 volumes:
   qdrant_data:
