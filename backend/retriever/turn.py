@@ -15,6 +15,7 @@ import logging
 import uuid
 from contextlib import aclosing
 from dataclasses import dataclass
+from typing import TypedDict
 
 import doc_retrieval
 import repository
@@ -403,6 +404,283 @@ def _replay(user_message_id: str, answer: dict) -> list:
             answer=answer["content"],
         ),
     ]
+
+
+# ---------- Graph state and nodes (step 2 of the LangGraph port) ----------
+#
+# Not used by run_turn yet. Each node takes the state and returns only the keys
+# it changes. They reuse the helpers above unchanged and stay in THIS module on
+# purpose: the tests replace names such as `stream_response`, `retrieve_messages`
+# and `doc_retrieval.*` here, and a node must see the replacement at call time.
+
+class TurnState(TypedDict, total=False):
+    # inputs
+    user_id: str
+    conversation_id: str
+    query: str
+    user_message_id: str | None
+    regenerate: bool
+    document_ids: list[str]
+    # working data
+    saved: dict | None  # what repository.get_turn_state found (for the replay check)
+    history: list[dict]
+    library: list[dict]
+    vectors: dict | None
+    chat_results: list[dict]
+    doc_results: list[dict]
+    results: list[dict]  # chat_results + doc_results
+    # outputs
+    assistant_message_id: str
+    answer: str
+
+
+async def node_check_replay(state: TurnState) -> dict:
+    """Look up what is already saved for this question id (the idempotency check).
+
+    Skipped (saved = None) when the browser sent no id or asked to regenerate.
+    """
+
+    user_message_id = state.get("user_message_id")
+
+    if not user_message_id or state.get("regenerate"):
+        return {"saved": None}
+
+    saved = await asyncio.to_thread(
+        repository.get_turn_state,
+        state["user_id"],
+        state["conversation_id"],
+        user_message_id,
+    )
+
+    return {"saved": saved}
+
+
+async def node_cut_old(state: TurnState) -> dict:
+    """Edit / regenerate / retry: remove the old question and everything after it."""
+
+    user_message_id = state.get("user_message_id")
+
+    if user_message_id:
+        await _cut_from(state["user_id"], state["conversation_id"], user_message_id)
+
+    return {}
+
+
+async def node_load_history(state: TurnState) -> dict:
+    """What was said earlier in THIS chat (before the new question is saved)."""
+
+    history = await asyncio.to_thread(
+        repository.load_chat_history, state["conversation_id"]
+    )
+
+    return {"history": history}
+
+
+async def node_plan_search(state: TurnState) -> dict:
+    """List the user's documents (only if none were chosen) and embed the question once.
+
+    With no documents chosen and none in the library there is nothing to embed
+    for a document search, so `vectors` stays None, exactly as before.
+    """
+
+    document_ids = state.get("document_ids") or []
+    library: list[dict] = []
+
+    if not document_ids:
+        library = await _list_library(state["user_id"])
+
+    vectors = await _embed(state["query"]) if (document_ids or library) else None
+
+    return {"library": library, "vectors": vectors}
+
+
+async def node_retrieve_chat(state: TurnState) -> dict:
+    """Related older messages of this chat, without the ones already in the history."""
+
+    history = state.get("history") or []
+
+    found = await _retrieve(
+        state["query"],
+        state["user_id"],
+        state["conversation_id"],
+        RETRIEVAL_LIMIT + len(history),
+        state.get("vectors"),
+    )
+
+    return {
+        "chat_results": drop_messages_already_in_history(found, history)[:RETRIEVAL_LIMIT]
+    }
+
+
+async def node_retrieve_docs(state: TurnState) -> dict:
+    """Excerpts of the chosen documents, or of the whole library when none were chosen."""
+
+    document_ids = state.get("document_ids") or []
+    doc_results: list[dict] = []
+
+    if document_ids:
+        doc_results = await _retrieve_documents(
+            state.get("vectors"), state["user_id"], list(document_ids), DOCUMENT_CONTEXT_LIMIT
+        )
+    elif state.get("library"):
+        doc_results = await _retrieve_documents(
+            state.get("vectors"), state["user_id"], None, DOCUMENT_CONTEXT_LIMIT
+        )
+
+    return {"doc_results": doc_results}
+
+
+# ---------- Event nodes, routing and the generate node (steps 3 and 4) ----------
+#
+# These send events (Context, Token, Done) through LangGraph's custom stream
+# instead of `yield`. Events never go into the state.
+
+def _writer():
+    """The function that sends one event to the caller of graph.astream().
+
+    The import is inside the function so this module still loads where
+    langgraph is not installed yet. Tests replace this name with a fake.
+    """
+
+    from langgraph.config import get_stream_writer
+
+    return get_stream_writer()
+
+
+def route_after_check(state: TurnState) -> str:
+    """"replay" when the same question (same id, same text) was already answered."""
+
+    saved = state.get("saved")
+
+    if saved and saved["answer"] and saved["query"] == state["query"]:
+        return "replay"
+
+    return "fresh"
+
+
+async def node_replay(state: TurnState) -> dict:
+    """Send the saved answer again: no model call, nothing new saved."""
+
+    write = _writer()
+
+    for event in _replay(state["user_message_id"], state["saved"]["answer"]):
+        write(event)
+
+    return {}
+
+
+async def node_emit_context(state: TurnState) -> dict:
+    """Send the Context event (chat messages first, then document excerpts)."""
+
+    results = (state.get("chat_results") or []) + (state.get("doc_results") or [])
+
+    _writer()(Context(results))
+
+    return {"results": results}
+
+
+async def node_save_question(state: TurnState) -> dict:
+    """Save the question, then index it in the background.
+
+    Runs after both searches, so the question cannot retrieve itself.
+    """
+
+    user_message_id = state.get("user_message_id")
+    extra = {"message_id": user_message_id} if user_message_id else {}
+
+    user_message_id = await asyncio.to_thread(
+        repository.add_message,
+        state["conversation_id"],
+        "user",
+        state["query"],
+        **extra,
+    )
+    _spawn(
+        _index(
+            state["user_id"],
+            state["conversation_id"],
+            "user",
+            state["query"],
+            user_message_id,
+        )
+    )
+
+    return {"user_message_id": user_message_id}
+
+
+async def node_generate(state: TurnState) -> dict:
+    """Stream the answer, save it, send Done.
+
+    Streaming and saving are ONE node on purpose: if the user presses stop the
+    graph is cancelled, and a node placed after this one would never run. The
+    save sits in `finally`, shielded, so a stop still keeps what was written.
+    A failed model call saves nothing.
+    """
+
+    write = _writer()
+
+    user_id = state["user_id"]
+    conversation_id = state["conversation_id"]
+    user_message_id = state["user_message_id"]
+    chat_results = state.get("chat_results") or []
+    doc_results = state.get("doc_results") or []
+    library = state.get("library") or []
+
+    # `documents` is only passed when there are excerpts. With no document
+    # chosen the model also gets the NAMES of the user's documents.
+    extra_args = {"documents": doc_results} if doc_results else {}
+
+    if library:
+        extra_args["available_documents"] = [d["filename"] for d in library]
+
+    # Chat messages and document excerpts go in separate arguments
+    tokens = stream_response(
+        state["query"], chat_results, state.get("history") or [], **extra_args
+    )
+
+    parts: list[str] = []
+    failed = False
+    saving: asyncio.Future | None = None
+
+    try:
+        async for text in tokens:
+            parts.append(text)
+            write(Token(text))
+
+    except Exception:
+        # The model or the network failed: nothing half-written is saved
+        failed = True
+        raise
+
+    finally:
+        await tokens.aclose()
+
+        # Runs on normal completion AND when the caller cancelled. Shielded, so
+        # a second cancel cannot interrupt the save.
+        if not failed:
+            saving = asyncio.ensure_future(
+                _save_answer(
+                    user_id,
+                    conversation_id,
+                    "".join(parts),
+                    chat_results + doc_results,  # citations are saved with the answer
+                    answer_id_for(user_message_id),
+                )
+            )
+            await asyncio.shield(saving)
+
+    answer = "".join(parts)
+    assistant_message_id = saving.result() if saving else ""
+
+    write(
+        Done(
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            answer=answer,
+        )
+    )
+
+    return {"answer": answer, "assistant_message_id": assistant_message_id}
 
 
 async def _fresh_turn(
