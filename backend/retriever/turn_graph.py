@@ -10,7 +10,10 @@ time, so the nodes always belong to the module whose run_turn is running (the
 tests load their own copy of `turn` with fakes, and that copy must use its own
 nodes; `sys.modules["turn"]` can point somewhere else by then).
 
-    START -> check_replay --replay--> replay -> END
+    START -> check_input --refuse--> refuse -> END
+                  |continue
+                  v
+             check_replay --replay--> replay -> END
                   |fresh
                   v
     cut_old -> load_history -> plan_search --+--> retrieve_chat --+
@@ -35,8 +38,8 @@ def build(turn=None):
     """Build and compile the graph. No checkpointer: SQLite and Qdrant stay
     the only places where anything is saved.
 
-    `turn` is anything that has the node functions, `TurnState` and
-    `route_after_check` as attributes (default: the `turn` module on the
+    `turn` is anything that has the node functions, `TurnState`,
+    `route_after_check` and `route_after_input` as attributes (default: the `turn` module on the
     import path)."""
 
     if turn is None:
@@ -44,6 +47,8 @@ def build(turn=None):
 
     g = StateGraph(turn.TurnState)
 
+    g.add_node("check_input", turn.node_check_input)
+    g.add_node("refuse", turn.node_refuse)
     g.add_node("check_replay", turn.node_check_replay)
     g.add_node("replay", turn.node_replay)
     g.add_node("cut_old", turn.node_cut_old)
@@ -55,7 +60,14 @@ def build(turn=None):
     g.add_node("save_question", turn.node_save_question)
     g.add_node("generate", turn.node_generate)
 
-    g.add_edge(START, "check_replay")
+    g.add_edge(START, "check_input")
+    g.add_conditional_edges(
+        "check_input",
+        turn.route_after_input,
+        {"refuse": "refuse", "continue": "check_replay"},
+    )
+    g.add_edge("refuse", END)
+
     g.add_conditional_edges(
         "check_replay",
         turn.route_after_check,

@@ -23,6 +23,7 @@ from typing import TypedDict
 
 import doc_retrieval
 import repository
+from common.sanitize import find_injection
 from embeddings import embed_query
 from llm import stream_response
 from qdrant_store import delete_message_points, store_message
@@ -465,6 +466,7 @@ class TurnState(TypedDict, total=False):
     chat_results: list[dict]
     doc_results: list[dict]
     results: list[dict]  # chat_results + doc_results
+    injection_found: bool  # set by check_input
     # outputs
     assistant_message_id: str
     answer: str
@@ -598,6 +600,59 @@ def route_after_check(state: TurnState) -> str:
         return "replay"
 
     return "fresh"
+
+
+# What the user sees when the question is refused (see node_refuse)
+REFUSAL_TEXT = (
+    "I can't follow requests that try to change my rules or show my hidden "
+    "instructions. Please ask your question in a different way."
+)
+
+
+@_logged("check_input")
+async def node_check_input(state: TurnState) -> dict:
+    """Look at the new question for a prompt-injection phrase.
+
+    Only sets a flag; route_after_input decides what happens next. The
+    question text is never logged, only the fact that it was refused.
+    """
+
+    found = find_injection(state["query"]) is not None
+
+    if found:
+        logger.warning("Question refused: it looks like a prompt injection")
+
+    return {"injection_found": found}
+
+
+def route_after_input(state: TurnState) -> str:
+    """"refuse" when check_input found an injection phrase, else "continue"."""
+
+    return "refuse" if state.get("injection_found") else "continue"
+
+
+@_logged("refuse")
+async def node_refuse(state: TurnState) -> dict:
+    """Answer with a fixed refusal. No search, no model call, nothing saved.
+
+    The events keep the usual shape (Context, Token, Done), so main.py and
+    the orchestrator need no change. The question is not saved either, so it
+    can not come back later as history or as a search result.
+    """
+
+    write = _writer()
+
+    write(Context([]))
+    write(Token(REFUSAL_TEXT))
+    write(
+        Done(
+            user_message_id=state.get("user_message_id") or "",
+            assistant_message_id="",
+            answer=REFUSAL_TEXT,
+        )
+    )
+
+    return {"answer": REFUSAL_TEXT}
 
 
 @_logged("replay")
@@ -801,6 +856,7 @@ def _graph_nodes() -> types.SimpleNamespace:
     return types.SimpleNamespace(
         TurnState=names["TurnState"],
         route_after_check=names["route_after_check"],
+        route_after_input=names["route_after_input"],
         **{name: fn for name, fn in names.items() if name.startswith("node_")},
     )
 
