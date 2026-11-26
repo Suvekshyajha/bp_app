@@ -76,49 +76,8 @@ A chat app with a memory. You talk to an AI assistant, and it can remember what 
 
 The **retriever** (folder `backend/retriever`, also called the chat service) is the part that owns the conversation: it has its own SQLite database, calls the LLM, searches Qdrant and holds the encryption key. The orchestrator never touches any of those.
 
-```text
-                           ┌──────────────────────┐
-                           │       Browser        │
-                           │  React + TypeScript  │
-                           └──────────────────────┘
-                                       │  REST + WebSocket (session cookie)
-                                       ▼
-                  ┌────────────────────────────────────────┐
-                  │              Orchestrator              │
-                  │     login · sessions · rate limit      │
-                  │                                        │
-                  │     ┌────────────────────────────┐     │
-                  │     │ SQLite chat.db             │     │
-                  │     │ users and sessions only    │     │
-                  │     └────────────────────────────┘     │
-                  └────────────────────────────────────────┘
-                                       │  gRPC + service token (optional TLS),
-                                       │  internal network only
-                                       ▼
-      ┌───────────────────────────────────────────────────────────┐
-      │  Retriever  (chat service, folder backend/retriever)      │
-      │  one chat turn · history · search · encryption            │
-      │                                                           │
-      │  ┌─────────────────────────────────────────────────────┐  │
-      │  │ Encryption (crypto.py): the key lives only here     │  │
-      │  └─────────────────────────────────────────────────────┘  │
-      │                                                           │
-      │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  │
-      │  │ SQLite        │  │ LLM client    │  │ Search        │  │
-      │  │ chat.db       │  │ llm.py        │  │ embeddings +  │  │
-      │  │ chats and     │  │ streams the   │  │ hybrid        │  │
-      │  │ messages      │  │ answer        │  │ retrieval     │  │
-      │  │ (encrypted)   │  │               │  │               │  │
-      │  └───────────────┘  └───────┬───────┘  └───────┬───────┘  │
-      └─────────────────────────────┬──────────────────┬──────────┘
-                                    │ HTTPS            │ database client
-                                    ▼                  ▼
-                              ┌───────────┐   ┌─────────────────┐
-                              │  Groq LLM │   │      Qdrant     │
-                              │ (AI model)│   │  vectors + text │
-                              └───────────┘   │ (text encrypted)│
-                                              └─────────────────┘
-```
+<img width="1900" height="1500" alt="architecture_diagram_v2" src="https://github.com/user-attachments/assets/80bc769a-2a7e-4a02-962a-63630c182759" />
+
 
 ### Documents and the ingestion service
 
