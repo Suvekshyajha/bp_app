@@ -31,3 +31,7 @@ venv/
 # Protobuf
 *_pb2.py
 *_pb2_grpc.py
+
+# Backup files and private keys
+*.bak
+server.key

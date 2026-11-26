@@ -1,0 +1,5 @@
+# Not needed for the build; settings come from Vercel, not local .env files
+node_modules
+dist
+.env
+.env.*
