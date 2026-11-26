@@ -119,6 +119,7 @@ def upload(request: Request, file: UploadFile = File(...), user_id: str = Depend
 
         try:
             check_file_signature(str(temporary), source_type)
+            logger.debug(f"File signature check passed for {filename}.")
         except ParseError as error:
             if error.code == limits.ERR_TOO_LARGE:
                 logger.warning("File %s rejected: %s", filename, error) 
