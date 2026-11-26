@@ -421,14 +421,21 @@ class NodeLogs(logging.Filter):
 def node_logs():
     logs = NodeLogs()
     logger = logging.getLogger("turn")
-    previous = logger.level
+    previous = (logger.level, logger.disabled, logging.root.manager.disable)
+
+    # Make sure the lines reach the filter even if something else in the test
+    # run turned this logger (or all logging) down or off.
+    logging.disable(logging.NOTSET)
+    logger.disabled = False
     logger.setLevel(logging.INFO)
     logger.addFilter(logs)
 
     yield logs
 
     logger.removeFilter(logs)
-    logger.setLevel(previous)
+    logger.setLevel(previous[0])
+    logger.disabled = previous[1]
+    logging.disable(previous[2])
 
 
 def node_names(logs):
@@ -482,6 +489,8 @@ def test_node_logs_have_milliseconds_and_never_the_question_or_the_answer(
         await drain_background()
 
     asyncio.run(scenario())
+
+    assert len(node_logs.lines) == 9  # a loop over nothing would pass without checking anything
 
     for line, _ in node_logs.lines:
         assert " ms=" in line and line.split(" ms=")[1].isdigit()
