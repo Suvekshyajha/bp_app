@@ -30,4 +30,5 @@ venv/
 #protobuff
 # Protobuf
 *_pb2.py
-*_pb2_grpc.py
+*_pb2_grpc.py*.bak
+server.key
