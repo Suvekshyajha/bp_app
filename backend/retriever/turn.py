@@ -13,6 +13,7 @@ saved, because the saving runs shielded in the `finally` block.
 import asyncio
 import functools
 import logging
+import os
 import time
 import types
 import uuid
@@ -38,6 +39,12 @@ RETRIEVAL_LIMIT = 5
 # ones come on top of this (see doc_retrieval.NEIGHBOR_HITS); the prompt
 # budget in llm.py decides how many of them the model actually sees.
 DOCUMENT_CONTEXT_LIMIT = 6
+
+# Token coalescing (optional, OFF by default). 0 = every token goes out the moment
+# the model writes it. With a value such as 25, tokens that arrive faster than one
+# per 25 ms are sent together, which lowers the message rate. The first token is
+# never delayed. Turn it on only if the message rate is a measured problem.
+TOKEN_COALESCE_MS = int(os.getenv("TOKEN_COALESCE_MS", "0"))
 
 # What is kept (and sent to the client) for a document excerpt, next to the
 # usual id / score / role / content / timestamp.
@@ -646,6 +653,57 @@ async def node_save_question(state: TurnState) -> dict:
     return {"user_message_id": user_message_id}
 
 
+class _TokenSender:
+    """Sends tokens to the caller, optionally merging bursts (TOKEN_COALESCE_MS).
+
+    Window 0 (the default): every token is written at once, exactly as before.
+
+    Window above 0: the FIRST token, and any token that follows a quiet moment,
+    goes out at once. Tokens that arrive faster than one per window are held
+    and sent together. Held text never waits for the next token: a timer sends
+    it when the window ends, and flush() sends it at the end of the answer, when
+    the turn is stopped, or when the model fails.
+    """
+
+    def __init__(self, write, window: float, loop):
+        self._write = write
+        self._window = window
+        self._loop = loop
+        self._held = ""
+        self._timer = None
+        self._last = None  # when something was last sent
+
+    def add(self, text: str) -> None:
+        if self._window <= 0:
+            self._write(Token(text))
+            return
+
+        now = self._loop.time()
+
+        if not self._held and (self._last is None or now - self._last >= self._window):
+            self._send(text, now)
+            return
+
+        self._held += text
+
+        if self._timer is None:
+            wait = max(0.0, self._last + self._window - now)
+            self._timer = self._loop.call_later(wait, self.flush)
+
+    def flush(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+        if self._held:
+            text, self._held = self._held, ""
+            self._send(text, self._loop.time())
+
+    def _send(self, text: str, now: float) -> None:
+        self._last = now
+        self._write(Token(text))
+
+
 @_logged("generate")
 async def node_generate(state: TurnState) -> dict:
     """Stream the answer, save it, send Done.
@@ -657,6 +715,7 @@ async def node_generate(state: TurnState) -> dict:
     """
 
     write = _writer()
+    started = time.monotonic()  # for the first_token log line
 
     user_id = state["user_id"]
     conversation_id = state["conversation_id"]
@@ -680,11 +739,18 @@ async def node_generate(state: TurnState) -> dict:
     parts: list[str] = []
     failed = False
     saving: asyncio.Future | None = None
+    first_token_logged = False
+    sender = _TokenSender(write, TOKEN_COALESCE_MS / 1000, asyncio.get_running_loop())
 
     try:
         async for text in tokens:
+            if not first_token_logged:
+                # Once per turn, and never any text: only how long the first word took
+                first_token_logged = True
+                logger.info("first_token ms=%d", (time.monotonic() - started) * 1000)
+
             parts.append(text)
-            write(Token(text))
+            sender.add(text)
 
     except Exception:
         # The model or the network failed: nothing half-written is saved
@@ -692,6 +758,7 @@ async def node_generate(state: TurnState) -> dict:
         raise
 
     finally:
+        sender.flush()  # held text (coalescing on) goes out before Done, or before the error
         await tokens.aclose()
 
         # Runs on normal completion AND when the caller cancelled. Shielded, so
