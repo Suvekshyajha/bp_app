@@ -918,3 +918,12 @@ signup:
 chat app:
 
 <img width="1887" height="953" alt="image" src="https://github.com/user-attachments/assets/32d0b6b5-d949-4494-bea3-a4cdd948ab51" />
+
+doc ingestion feature:
+
+<img width="986" height="130" alt="image" src="https://github.com/user-attachments/assets/9607bdee-c3ce-4dbf-be2c-d3556f5505ed" />
+
+doc attachment:
+
+<img width="1783" height="849" alt="image" src="https://github.com/user-attachments/assets/25672914-1c16-4fbc-af99-485d45ddfa52" />
+
