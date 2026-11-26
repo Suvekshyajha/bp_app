@@ -16,11 +16,14 @@ nodes; `sys.modules["turn"]` can point somewhere else by then).
              check_replay --replay--> replay -> END
                   |fresh
                   v
-    cut_old -> load_history -> plan_search --+--> retrieve_chat --+
-                                             |                    +--> emit_context
-                                             +--> retrieve_docs -+          |
-                                                                            v
-                                                          save_question -> generate -> END
+    cut_old -> load_history -> rewrite_question -> plan_search
+                                                        |
+                                    +-------------------+-------------------+
+                                    v                                       v
+                              retrieve_chat                           retrieve_docs
+                                    +-------------------+-------------------+
+                                                        v
+                              emit_context -> save_question -> generate -> END
 
 The two searches run at the same time (they write different state keys, so
 no reducer is needed) and emit_context waits for both.
@@ -29,7 +32,7 @@ no reducer is needed) and emit_context waits for both.
 from langgraph.graph import END, START, StateGraph
 
 # The "fresh" path, in order. The two searches in the middle run in parallel.
-BEFORE_SEARCH = ["cut_old", "load_history", "plan_search"]
+BEFORE_SEARCH = ["cut_old", "load_history", "rewrite_question", "plan_search"]
 SEARCHES = ["retrieve_chat", "retrieve_docs"]
 AFTER_SEARCH = ["emit_context", "save_question", "generate"]
 
@@ -53,6 +56,7 @@ def build(turn=None):
     g.add_node("replay", turn.node_replay)
     g.add_node("cut_old", turn.node_cut_old)
     g.add_node("load_history", turn.node_load_history)
+    g.add_node("rewrite_question", turn.node_rewrite_question)
     g.add_node("plan_search", turn.node_plan_search)
     g.add_node("retrieve_chat", turn.node_retrieve_chat)
     g.add_node("retrieve_docs", turn.node_retrieve_docs)

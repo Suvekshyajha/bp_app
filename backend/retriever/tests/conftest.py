@@ -255,3 +255,48 @@ def doc_search(monkeypatch):
     monkeypatch.setattr(turn.doc_retrieval, "list_documents", fake.list_documents)
     monkeypatch.setattr(turn.doc_retrieval, "retrieve_document_chunks", fake.retrieve_document_chunks)
     return fake
+
+
+# ---------------------------------------------------------------------------
+# The question rewriter (rewrite_question node). No test may call the real
+# model, so its client is always replaced.
+# ---------------------------------------------------------------------------
+
+class FakeRewriter:
+    """Stands in for llm.async_client.
+
+    reply  what the model answers (empty = the original question is used)
+    error  if set, the call raises it
+    hang   the call never returns
+    calls  the keyword arguments of every call
+    """
+
+    def __init__(self):
+        self.reply = ""
+        self.error = None
+        self.hang = False
+        self.calls = []
+        self.chat = self.completions = self  # client.chat.completions.create
+
+    async def create(self, **kwargs):
+        from types import SimpleNamespace
+
+        self.calls.append(kwargs)
+
+        if self.hang:
+            await asyncio.Event().wait()
+
+        if self.error:
+            raise self.error
+
+        message = SimpleNamespace(content=self.reply)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+@pytest.fixture(autouse=True)
+def rewriter(monkeypatch):
+    import llm
+
+    fake = FakeRewriter()
+    monkeypatch.setattr(llm, "async_client", fake, raising=False)
+    return fake

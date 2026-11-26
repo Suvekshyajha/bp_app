@@ -23,7 +23,8 @@ CHAT = "chat-0001"
 QUESTION_ID = "question-0001"
 
 NODES = {
-    "check_input", "refuse", "check_replay", "replay", "cut_old", "load_history", "plan_search",
+    "check_input", "refuse", "check_replay", "replay", "cut_old", "load_history", "rewrite_question",
+    "plan_search",
     "retrieve_chat", "retrieve_docs", "emit_context", "save_question", "generate",
 }
 
@@ -50,7 +51,8 @@ def test_the_graph_has_exactly_the_expected_edges():
         ("check_replay", "cut_old", True),
         ("replay", "__end__", False),
         ("cut_old", "load_history", False),
-        ("load_history", "plan_search", False),
+        ("load_history", "rewrite_question", False),
+        ("rewrite_question", "plan_search", False),
         ("plan_search", "retrieve_chat", False),   # fan out: both searches start together
         ("plan_search", "retrieve_docs", False),
         ("retrieve_chat", "emit_context", False),  # join: emit_context waits for both
@@ -454,9 +456,11 @@ def test_a_fresh_turn_logs_one_line_per_node(session_factory, model, indexed, re
 
     names = node_names(node_logs)
 
-    assert names[:5] == ["check_input", "check_replay", "cut_old", "load_history", "plan_search"]
-    assert set(names[5:7]) == {"retrieve_chat", "retrieve_docs"}  # either order: they run together
-    assert names[7:] == ["emit_context", "save_question", "generate"]
+    assert names[:6] == [
+        "check_input", "check_replay", "cut_old", "load_history", "rewrite_question", "plan_search",
+    ]
+    assert set(names[6:8]) == {"retrieve_chat", "retrieve_docs"}  # either order: they run together
+    assert names[8:] == ["emit_context", "save_question", "generate"]
 
 
 def test_a_replayed_turn_logs_only_the_check_and_the_replay(session_factory, model, indexed, retrieved, node_logs):
@@ -480,7 +484,7 @@ def test_the_request_id_reaches_every_node(session_factory, model, indexed, retr
 
     asyncio.run(scenario())
 
-    assert len(node_logs.lines) == 10
+    assert len(node_logs.lines) == 11
     assert {rid for _, rid in node_logs.lines} == {"req-abc123"}
 
 
@@ -493,7 +497,7 @@ def test_node_logs_have_milliseconds_and_never_the_question_or_the_answer(
 
     asyncio.run(scenario())
 
-    assert len(node_logs.lines) == 10  # a loop over nothing would pass without checking anything
+    assert len(node_logs.lines) == 11  # a loop over nothing would pass without checking anything
 
     for line, _ in node_logs.lines:
         assert " ms=" in line and line.split(" ms=")[1].isdigit()

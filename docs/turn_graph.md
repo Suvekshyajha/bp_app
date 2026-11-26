@@ -20,10 +20,13 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
+	check_input(check_input)
+	refuse(refuse)
 	check_replay(check_replay)
 	replay(replay)
 	cut_old(cut_old)
 	load_history(load_history)
+	rewrite_question(rewrite_question)
 	plan_search(plan_search)
 	retrieve_chat(retrieve_chat)
 	retrieve_docs(retrieve_docs)
@@ -31,12 +34,16 @@ graph TD;
 	save_question(save_question)
 	generate(generate)
 	__end__([<p>__end__</p>]):::last
-	__start__ --> check_replay;
+	__start__ --> check_input;
+	check_input -. &nbsp;continue&nbsp; .-> check_replay;
+	check_input -.-> refuse;
+	refuse --> __end__;
 	check_replay -. &nbsp;fresh&nbsp; .-> cut_old;
 	check_replay -.-> replay;
 	cut_old --> load_history;
 	emit_context --> save_question;
-	load_history --> plan_search;
+	load_history --> rewrite_question;
+	rewrite_question --> plan_search;
 	plan_search --> retrieve_chat;
 	plan_search --> retrieve_docs;
 	retrieve_chat --> emit_context;
@@ -61,6 +68,23 @@ graph TD;
 
 Why: a foreign user must never occupy a claim key and make the real user wait
 up to 60 seconds, and the release must run even when the turn is cancelled.
+
+## The question is rewritten for search
+
+`rewrite_question` asks the model to rephrase the question before searching:
+abbreviations are expanded and words such as "it" or "this" are replaced using
+the last messages of the chat. The result (`search_query`) is used **only by the
+two searches**. The saved question, the history and the answer prompt keep the
+user's own words, and `check_input` still checks the original.
+
+- The original question is searched when the model fails, takes longer than
+  `REWRITE_TIMEOUT_SECONDS` (default 5), or replies with nothing, with more than
+  1000 characters, or with something that looks like a prompt injection.
+- No model call for a question over 1000 characters, or when the chat has no
+  earlier messages and there are no documents.
+- It costs one extra model call per question, so the first word arrives a little
+  later and more of the token limit is used. `REWRITE_MODEL` can name another
+  model; empty means `GROQ_MODEL`.
 
 ## Why there is only ONE `generate` node
 
