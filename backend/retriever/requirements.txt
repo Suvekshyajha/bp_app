@@ -86,3 +86,5 @@ uvicorn==0.54.0
 watchfiles==1.3.0
 websockets==17.4
 cryptography
+langgraph==1.2.24
+langchain-core==1.8.5
