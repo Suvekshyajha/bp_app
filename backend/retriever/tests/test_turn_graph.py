@@ -23,7 +23,7 @@ CHAT = "chat-0001"
 QUESTION_ID = "question-0001"
 
 NODES = {
-    "check_replay", "replay", "cut_old", "load_history", "plan_search",
+    "check_input", "refuse", "check_replay", "replay", "cut_old", "load_history", "plan_search",
     "retrieve_chat", "retrieve_docs", "emit_context", "save_question", "generate",
 }
 
@@ -42,7 +42,10 @@ def test_the_graph_has_exactly_the_expected_edges():
     edges = {(e.source, e.target, bool(e.conditional)) for e in drawn.edges}
 
     assert edges == {
-        ("__start__", "check_replay", False),
+        ("__start__", "check_input", False),
+        ("check_input", "refuse", True),
+        ("check_input", "check_replay", True),
+        ("refuse", "__end__", False),
         ("check_replay", "replay", True),
         ("check_replay", "cut_old", True),
         ("replay", "__end__", False),
@@ -451,9 +454,9 @@ def test_a_fresh_turn_logs_one_line_per_node(session_factory, model, indexed, re
 
     names = node_names(node_logs)
 
-    assert names[:4] == ["check_replay", "cut_old", "load_history", "plan_search"]
-    assert set(names[4:6]) == {"retrieve_chat", "retrieve_docs"}  # either order: they run together
-    assert names[6:] == ["emit_context", "save_question", "generate"]
+    assert names[:5] == ["check_input", "check_replay", "cut_old", "load_history", "plan_search"]
+    assert set(names[5:7]) == {"retrieve_chat", "retrieve_docs"}  # either order: they run together
+    assert names[7:] == ["emit_context", "save_question", "generate"]
 
 
 def test_a_replayed_turn_logs_only_the_check_and_the_replay(session_factory, model, indexed, retrieved, node_logs):
@@ -465,7 +468,7 @@ def test_a_replayed_turn_logs_only_the_check_and_the_replay(session_factory, mod
 
     asyncio.run(scenario())
 
-    assert node_names(node_logs) == ["check_replay", "replay"]
+    assert node_names(node_logs) == ["check_input", "check_replay", "replay"]
     assert len(model.calls) == 1
 
 
@@ -477,7 +480,7 @@ def test_the_request_id_reaches_every_node(session_factory, model, indexed, retr
 
     asyncio.run(scenario())
 
-    assert len(node_logs.lines) == 9
+    assert len(node_logs.lines) == 10
     assert {rid for _, rid in node_logs.lines} == {"req-abc123"}
 
 
@@ -490,7 +493,7 @@ def test_node_logs_have_milliseconds_and_never_the_question_or_the_answer(
 
     asyncio.run(scenario())
 
-    assert len(node_logs.lines) == 9  # a loop over nothing would pass without checking anything
+    assert len(node_logs.lines) == 10  # a loop over nothing would pass without checking anything
 
     for line, _ in node_logs.lines:
         assert " ms=" in line and line.split(" ms=")[1].isdigit()
