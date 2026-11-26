@@ -143,4 +143,5 @@ jobs:
       - name: Test
         env:
           GROQ_API_KEY: dummy-key-for-tests
+          INGEST_SERVICE_TOKEN: dummy-token-for-tests
         run: python -m pytest
