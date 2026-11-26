@@ -30,7 +30,8 @@ RUN python -m grpc_tools.protoc -I /tmp/proto \
     && rm -rf /tmp/proto
 
 # Do not run as root. /app must stay writable: chat.db is created in it.
-RUN useradd --create-home appuser && chown -R appuser /app /opt/models
+# /data is where a volume can keep the database across rebuilds
+RUN useradd --create-home appuser && mkdir /data && chown -R appuser /app /opt/models /data
 USER appuser
 
 # Use the models downloaded above and never call Hugging Face at run time.

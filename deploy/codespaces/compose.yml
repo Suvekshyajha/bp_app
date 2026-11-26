@@ -1,0 +1,71 @@
+# The whole backend for a demo in GitHub Codespaces (frontend is on Vercel).
+# Start it with:  bash deploy/codespaces/start.sh
+# Only the orchestrator is published; the other services stay on the private
+# network between the containers.
+name: infomate-codespace
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  retriever:
+    build:
+      context: ../..
+      dockerfile: backend/retriever/Dockerfile
+    restart: unless-stopped
+    depends_on: [qdrant]
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: openai/gpt-oss-120b
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      CHAT_ENCRYPTION_KEYS: ${CHAT_ENCRYPTION_KEYS}
+      CHAT_SERVICE_TOKEN: ${CHAT_SERVICE_TOKEN}
+      CHAT_DB_PATH: /data/chat.db
+    volumes:
+      - retriever_data:/data
+
+  ingestion:
+    build:
+      context: ../..
+      dockerfile: backend/ingestion/Dockerfile
+    restart: unless-stopped
+    depends_on: [qdrant]
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      CHAT_ENCRYPTION_KEYS: ${CHAT_ENCRYPTION_KEYS}
+      INGEST_SERVICE_TOKEN: ${INGEST_SERVICE_TOKEN}
+      INGEST_DB_PATH: /data/ingest.db
+      INGEST_UPLOAD_DIR: /data/uploads
+    volumes:
+      - ingestion_data:/data
+
+  orchestrator:
+    build:
+      context: ../..
+      dockerfile: backend/orchestrator/Dockerfile
+    restart: unless-stopped
+    depends_on: [retriever, ingestion]
+    environment:
+      CHAT_SERVICE_ADDRESS: retriever:50051
+      CHAT_SERVICE_TOKEN: ${CHAT_SERVICE_TOKEN}
+      INGEST_SERVICE_URL: http://ingestion:8100
+      INGEST_SERVICE_TOKEN: ${INGEST_SERVICE_TOKEN}
+      CORS_ORIGINS: ${FRONTEND_URL}
+      # The website and the API are on different sites
+      COOKIE_SECURE: "true"
+      COOKIE_SAMESITE: none
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+
+volumes:
+  qdrant_data:
+  retriever_data:
+  ingestion_data:
