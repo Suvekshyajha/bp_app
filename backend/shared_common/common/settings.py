@@ -2,9 +2,9 @@
 
 import uuid
 
-DENSE_MODEL = "ibm-granite/granite-embedding-small-english-r2"
+DENSE_MODEL = "ibm-granite/granite-embedding-english-r2"
 SPARSE_MODEL = "Qdrant/bm25"
-DENSE_DIM = 384
+DENSE_DIM = 768
 
 # The model can read 8192 tokens, but one 6000-token text takes about 5 seconds
 # on a CPU, so longer texts are cut here. Document chunks are far shorter.
