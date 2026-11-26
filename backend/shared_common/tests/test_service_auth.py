@@ -1,10 +1,10 @@
-"""The chat service refuses to start without a service token."""
+﻿"""The chat service refuses to start without a service token."""
 
 import logging
 
 import pytest
 
-from service_auth import require_service_token
+from common.service_auth import require_service_token
 
 GOOD = "a-long-enough-token-1234"
 
@@ -49,3 +49,24 @@ def test_opt_out_works_on_this_machine_only_and_warns(caplog):
 
 def test_opt_out_is_not_needed_when_there_is_a_token():
     assert require_service_token(GOOD, True, "0.0.0.0") == GOOD
+
+
+def test_a_custom_name_appears_in_every_error_text():
+    ingest = {"name": "INGEST_SERVICE_TOKEN"}
+
+    with pytest.raises(RuntimeError, match="INGEST_SERVICE_TOKEN is not set"):
+        require_service_token(None, False, "127.0.0.1", **ingest)
+
+    with pytest.raises(RuntimeError, match="INGEST_ALLOW_NO_AUTH=true"):
+        require_service_token(None, False, "127.0.0.1", **ingest)
+
+    with pytest.raises(RuntimeError, match="INGEST_BIND_HOST"):
+        require_service_token(None, True, "0.0.0.0", **ingest)
+
+    with pytest.raises(RuntimeError, match="INGEST_SERVICE_TOKEN is still the example"):
+        require_service_token("change_me", False, "127.0.0.1", **ingest)
+
+
+def test_the_default_name_is_unchanged_for_the_chat_service():
+    with pytest.raises(RuntimeError, match="CHAT_SERVICE_TOKEN is not set"):
+        require_service_token(None, False, "127.0.0.1")

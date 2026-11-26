@@ -8,11 +8,13 @@
 # It starts, in this order (each one waits for the previous one):
 #     1. Qdrant            (Docker, port 6333)
 #     2. Retriever         (gRPC, port 50051)   - new window
-#     3. Orchestrator      (FastAPI, port 8000) - new window
-#     4. Frontend          (Vite, port 5173)    - new window
+#     3. Ingestion API     (FastAPI, port 8100) - new window
+#     4. Ingestion worker  (no port)            - new window, BelowNormal priority
+#     5. Orchestrator      (FastAPI, port 8000) - new window
+#     6. Frontend          (Vite, port 5173)    - new window
 # Then it opens http://localhost:5173 in your browser.
 #
-# To stop: close the three windows (or press Ctrl+C in each), then run:
+# To stop: close the five windows (or press Ctrl+C in each), then run:
 #     docker compose down
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +23,7 @@ $Root         = $PSScriptRoot
 $Backend      = Join-Path $Root "backend"
 $Retriever    = Join-Path $Backend "retriever"
 $Orchestrator = Join-Path $Backend "orchestrator"
+$Ingestion    = Join-Path $Backend "ingestion"
 $Frontend     = Join-Path $Root "frontend"
 
 
@@ -70,7 +73,7 @@ function Wait-ForPort($port, $name, $timeoutSeconds) {
 }
 
 # Waits until the API health check answers
-function Wait-ForApi($url, $timeoutSeconds) {
+function Wait-ForApi($url, $timeoutSeconds, $window = "orchestrator") {
     $deadline = (Get-Date).AddSeconds($timeoutSeconds)
 
     while ((Get-Date) -lt $deadline) {
@@ -86,12 +89,17 @@ function Wait-ForApi($url, $timeoutSeconds) {
         }
     }
 
-    Fail "The API did not answer at $url within $timeoutSeconds seconds. Check the orchestrator window."
+    Fail "The API did not answer at $url within $timeoutSeconds seconds. Check the $window window."
 }
 
 # Opens a new PowerShell window that runs one command in one folder
-function Start-InWindow($title, $folder, $command) {
-    $inner = "`$Host.UI.RawUI.WindowTitle = '$title'; Set-Location '$folder'; $command"
+# -LowPriority: the window itself is set to BelowNormal BEFORE the command starts,
+# and a process inherits the priority class of the process that starts it, so the
+# command never runs at normal priority.
+function Start-InWindow($title, $folder, $command, [switch]$LowPriority) {
+    $priority = ""
+    if ($LowPriority) { $priority = "(Get-Process -Id `$PID).PriorityClass = 'BelowNormal'; " }
+    $inner = "$priority`$Host.UI.RawUI.WindowTitle = '$title'; Set-Location '$folder'; $command"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $inner | Out-Null
 }
 
@@ -120,8 +128,13 @@ if (-not (Test-Path (Join-Path $Retriever ".env"))) {
     Fail "Missing backend\retriever\.env (it needs QDRANT_URL=http://localhost:6333)."
 }
 
+if (-not (Test-Path (Join-Path $Ingestion ".env"))) {
+    Fail "Missing backend\ingestion\.env (copy .env.example. It needs INGEST_SERVICE_TOKEN, the same value as in the orchestrator, and the same CHAT_ENCRYPTION_KEYS as the retriever)."
+}
+
 $RetrieverPython    = Get-VenvPython $Retriever
 $OrchestratorPython = Get-VenvPython $Orchestrator
+$IngestionPython    = Get-VenvPython $Ingestion
 Write-Host "    All checks passed" -ForegroundColor Green
 
 
@@ -143,14 +156,28 @@ Start-InWindow "Retriever (gRPC :50051)" $Retriever "& '$RetrieverPython' main.p
 Wait-ForPort 50051 "Retriever" 300
 
 
-# ---------- 3. Orchestrator ----------
+# ---------- 3. Ingestion API ----------
+Write-Step "Starting Ingestion API (FastAPI)"
+Start-InWindow "Ingestion API (FastAPI :8100)" $Ingestion "& '$IngestionPython' main.py"
+
+Wait-ForApi "http://localhost:8100/health" 120 "ingestion API"
+
+
+# ---------- 4. Ingestion worker ----------
+# The worker is what turns an uploaded document from pending into ready. It runs at
+# BelowNormal priority so that reading a big PDF does not slow the live chat.
+Write-Step "Starting Ingestion worker (low priority)"
+Start-InWindow "Ingestion worker (BelowNormal)" $Ingestion "& '$IngestionPython' worker.py" -LowPriority
+
+
+# ---------- 5. Orchestrator ----------
 Write-Step "Starting Orchestrator (FastAPI)"
 Start-InWindow "Orchestrator (FastAPI :8000)" $Orchestrator "& '$OrchestratorPython' -m uvicorn main:app --reload --port 8000"
 
 Wait-ForApi "http://localhost:8000/api/health" 90
 
 
-# ---------- 4. Frontend ----------
+# ---------- 6. Frontend ----------
 Write-Step "Starting Frontend (Vite)"
 
 if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
@@ -173,9 +200,10 @@ Write-Step "Everything is running"
 Write-Host "    App:          http://localhost:5173"
 Write-Host "    API docs:     http://localhost:8000/docs"
 Write-Host "    API health:   http://localhost:8000/api/health"
+Write-Host "    Ingestion:    http://localhost:8100/health"
 Write-Host "    Qdrant:       http://localhost:6333/dashboard"
 Write-Host ""
-Write-Host "    To stop: close the 3 windows, then run: docker compose down"
+Write-Host "    To stop: close the 5 windows, then run: docker compose down"
 Write-Host ""
 
 Start-Process "http://localhost:5173"

@@ -41,6 +41,7 @@ class FakeChatService:
         self.results = []
         self.error = None            # a ChatServiceError to raise first
         self.calls = []              # (user_id, conversation_id, query)
+        self.chat_options = []       # user_message_id, regenerate, document_ids of each chat call
         self.conversations = {"items": [], "next_cursor": None}
         self.messages = {"items": [], "next_cursor": None}
         self.history_error = None
@@ -49,8 +50,20 @@ class FakeChatService:
 service = FakeChatService()
 
 
-async def fake_chat(user_id, conversation_id, query):
+async def fake_chat(
+    user_id,
+    conversation_id,
+    query,
+    user_message_id=None,
+    regenerate=False,
+    document_ids=(),
+):
     service.calls.append((user_id, conversation_id, query))
+    service.chat_options.append({
+        "user_message_id": user_message_id,
+        "regenerate": regenerate,
+        "document_ids": list(document_ids),
+    })
 
     if service.error:
         raise service.error
@@ -104,9 +117,89 @@ fake_chat_client.delete_conversation = fake_delete_conversation
 fake_chat_client.close = fake_close
 sys.modules["chat_client"] = fake_chat_client
 
+# ---- Fake ingestion client (also installed before any import) ----
+
+fake_ingest_client = types.ModuleType("ingest_client")
+
+
+class IngestError(Exception):
+    def __init__(self, status, detail=""):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+class FakeIngestService:
+    """Scripted behaviour for the fake ingestion service. Tests change these fields."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.error = None      # an IngestError to raise on every call
+        self.calls = []        # (name, user_id, ...) of every call
+        self.uploads = []      # {"user_id", "filename", "content"} of every upload
+        self.upload_result = None   # (status, body); None = a normal 202
+        self.documents = []    # what list_documents returns
+        self.document = {"id": "x", "filename": "a.txt", "status": "ready"}
+
+
+ingest_service = FakeIngestService()
+
+
+async def fake_upload(user_id, filename, stream, content_type="application/octet-stream"):
+    ingest_service.calls.append(("upload", user_id, filename))
+
+    if ingest_service.error:
+        raise ingest_service.error
+
+    ingest_service.uploads.append(
+        {"user_id": user_id, "filename": filename, "content": stream.read()}
+    )
+
+    return ingest_service.upload_result or (
+        202,
+        {"id": "11111111-1111-4111-8111-111111111111", "filename": filename, "status": "pending"},
+    )
+
+
+async def fake_list_documents(user_id):
+    ingest_service.calls.append(("list", user_id))
+
+    if ingest_service.error:
+        raise ingest_service.error
+
+    return ingest_service.documents
+
+
+async def fake_get_document(user_id, document_id):
+    ingest_service.calls.append(("get", user_id, document_id))
+
+    if ingest_service.error:
+        raise ingest_service.error
+
+    return ingest_service.document
+
+
+async def fake_delete_document(user_id, document_id):
+    ingest_service.calls.append(("delete", user_id, document_id))
+
+    if ingest_service.error:
+        raise ingest_service.error
+
+
+fake_ingest_client.IngestError = IngestError
+fake_ingest_client.upload = fake_upload
+fake_ingest_client.list_documents = fake_list_documents
+fake_ingest_client.get_document = fake_get_document
+fake_ingest_client.delete_document = fake_delete_document
+fake_ingest_client.close = fake_close
+sys.modules["ingest_client"] = fake_ingest_client
+
 # ---- Real app modules (safe to import now) ----
 
 import auth  # noqa: E402
+import documents  # noqa: E402
 import history  # noqa: E402
 import models  # noqa: E402
 import websocket  # noqa: E402
@@ -118,6 +211,13 @@ def fake_service():
     """A clean scripted chat service for every test."""
     service.reset()
     return service
+
+
+@pytest.fixture(autouse=True)
+def fake_ingest():
+    """A clean scripted ingestion service for every test."""
+    ingest_service.reset()
+    return ingest_service
 
 
 @pytest.fixture
@@ -147,6 +247,7 @@ def db(session_factory):
 def app(session_factory, engine, monkeypatch):
     application = FastAPI()
     application.include_router(history.router, prefix="/api")
+    application.include_router(documents.router, prefix="/api")
     application.include_router(websocket.router)
 
     def override_get_db():

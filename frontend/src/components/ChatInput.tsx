@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 
 export function ChatInput({
   value,
@@ -6,12 +6,18 @@ export function ChatInput({
   onSend,
   onStop,
   sending,
+  header,
+  tools,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
   onStop?: () => void;
   sending: boolean;
+  // Shown inside the box, above the text (attached documents)
+  header?: ReactNode;
+  // Buttons at the bottom-left of the box (attach, documents)
+  tools?: ReactNode;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const submit = () => {
@@ -22,6 +28,7 @@ export function ChatInput({
 
   return (
     <form className="chat-input-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      {header}
       <label className="sr-only" htmlFor="chat-message-input">Message the assistant</label>
       <textarea
         ref={inputRef}
@@ -40,7 +47,10 @@ export function ChatInput({
         aria-describedby="chat-input-hint"
       />
       <div className="composer-footer">
-        <span id="chat-input-hint">Enter to send · Shift+Enter for a new line · 4,000 character limit</span>
+        <div className="composer-tools">
+          {tools}
+          <span id="chat-input-hint">Enter to send · Shift+Enter for a new line · 4,000 character limit</span>
+        </div>
         {sending && onStop ? (
           <button className="send-button" type="button" onClick={onStop} aria-label="Stop generating">
             <span>Stop</span><span aria-hidden="true">■</span>

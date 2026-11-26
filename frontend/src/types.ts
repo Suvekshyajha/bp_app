@@ -9,6 +9,12 @@ export interface RetrievedPayload {
   role?: string;
   content?: string;
   timestamp?: string;
+  // Set only for an excerpt from an uploaded document
+  document_id?: string;
+  filename?: string;
+  chunk_index?: number;
+  section_title?: string;
+  page?: number;
 }
 
 export interface RetrievedMessage {
@@ -54,6 +60,9 @@ export interface ServerMessage {
   role: MessageRole;
   content: string;
   created_at: string;
+  // The sources an answer was written with (document parts and older
+  // messages). Saved with the answer, so they come back with the history.
+  results?: RetrievedMessage[];
 }
 
 export interface ChatRequest {
@@ -61,6 +70,7 @@ export interface ChatRequest {
   conversation_id?: string;
   user_message_id?: string; // the idempotency key
   regenerate?: boolean; // true = a new answer to the same question
+  document_ids?: string[]; // uploaded documents to search (max 5)
 }
 
 export interface ChatResponse {
@@ -74,4 +84,33 @@ export interface Identity {
   userId: string;
   displayName: string;
   email: string;
+}
+
+// ---- Documents (backend/ingestion, through /api/documents) ----
+export type DocumentStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed"
+  | "deleting";
+
+export interface DocumentInfo {
+  id: string;
+  filename: string;
+  status: DocumentStatus;
+  stage?: string;
+  // A short safe code such as "no_text" (see components/documentStatus.ts)
+  error?: string;
+  chunkCount?: number;
+  createdAt: string;
+}
+
+export interface ServerDocument {
+  id: string;
+  filename: string;
+  status: DocumentStatus;
+  stage?: string | null;
+  error?: string | null;
+  chunk_count?: number | null;
+  created_at: string | null;
 }

@@ -28,6 +28,8 @@ function fromServer(item: ServerMessage): ChatMessage {
     content: item.content,
     createdAt: item.created_at,
     status: item.role === "user" ? "sent" : undefined,
+    // Without this the Sources panel would be empty after every reload
+    context: item.results?.length ? item.results : undefined,
   };
 }
 

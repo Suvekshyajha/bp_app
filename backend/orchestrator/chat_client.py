@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 import chat_pb2
 import chat_pb2_grpc
+from common.log import get_request_id
 
 load_dotenv()
 
@@ -96,9 +97,9 @@ def _metadata() -> tuple:
     """Sent with every call."""
 
     if CHAT_SERVICE_TOKEN:
-        return (("authorization", f"Bearer {CHAT_SERVICE_TOKEN}"),)
+        return (("authorization", f"Bearer {CHAT_SERVICE_TOKEN}"), ("x-request-id", get_request_id()))
 
-    return ()
+    return (("x-request-id", get_request_id()),)
 
 
 def _stubs():
@@ -128,15 +129,30 @@ def _iso(timestamp) -> str:
 def _result_for_frontend(message) -> dict:
     """The shape the frontend's ContextPanel already reads."""
 
+    payload = {
+        "message_id": message.id,
+        "role": _role_name(message.role),
+        "content": message.content,
+        "timestamp": _iso(message.created_at),
+    }
+
+    # Document excerpts also say where they came from. A past chat message has
+    # an empty document_id and keeps exactly the shape it always had.
+    if message.document_id:
+        payload["document_id"] = message.document_id
+        payload["filename"] = message.filename
+        payload["chunk_index"] = message.chunk_index
+
+        if message.section_title:
+            payload["section_title"] = message.section_title
+
+        if message.page:
+            payload["page"] = message.page
+
     return {
         "id": message.id,
         "score": message.similarity,
-        "payload": {
-            "message_id": message.id,
-            "role": _role_name(message.role),
-            "content": message.content,
-            "timestamp": _iso(message.created_at),
-        },
+        "payload": payload,
     }
 
 
@@ -148,6 +164,7 @@ async def chat(
     query: str,
     user_message_id: str | None = None,
     regenerate: bool = False,
+    document_ids=(),
 ) -> AsyncIterator[tuple[str, object]]:
     """Ask one question and yield what comes back, as (kind, value) pairs:
 
@@ -158,6 +175,8 @@ async def chat(
     `user_message_id` is the idempotency key. Sending the same id and text
     again returns the saved answer instead of asking the model again.
     `regenerate=True` asks for a new answer to the same question.
+    `document_ids` are the documents to search besides the chat (the chat
+    service checks that they belong to this user).
 
     Closing this generator (or cancelling the task reading it) cancels the
     gRPC call, and the service stops writing the answer.
@@ -172,6 +191,7 @@ async def chat(
             query=query,
             user_message_id=user_message_id or "",
             regenerate=regenerate,
+            document_ids=list(document_ids),
         ),
         timeout=CHAT_TIMEOUT_SECONDS,
         metadata=_metadata(),

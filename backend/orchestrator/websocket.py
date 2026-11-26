@@ -21,6 +21,8 @@ from auth import (
     extend_session,
     get_session_user_id,
 )
+from common.log import set_request_id
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -66,9 +68,56 @@ SERVICE_ERROR_MESSAGES = {
     grpc.StatusCode.UNAVAILABLE: (
         "The chat service is unavailable. Please try again shortly."
     ),
+    grpc.StatusCode.FAILED_PRECONDITION: (
+        "A selected document is still being processed. Try again in a moment."
+    ),
 }
 
 GENERIC_ERROR = "Something went wrong. Please try again."
+
+DOCUMENT_NOT_FOUND_MESSAGE = "A selected document was not found."
+
+# Most documents one question may search (the chat service checks this too)
+MAX_DOCUMENT_IDS = 5
+
+
+def service_error_text(error: ChatServiceError) -> str:
+    """What the browser is told. A missing DOCUMENT is not a missing chat: the
+    chat service tells them apart by the text, which starts with "Document"."""
+
+    if error.code == grpc.StatusCode.NOT_FOUND and error.message.startswith("Document"):
+        return DOCUMENT_NOT_FOUND_MESSAGE
+
+    return SERVICE_ERROR_MESSAGES.get(error.code, GENERIC_ERROR)
+
+
+def parse_document_ids(raw) -> list[str] | None:
+    """The `document_ids` of a browser message: a list of at most 5 different
+    UUIDs. Returns them in one canonical form with duplicates removed (nothing
+    sent gives an empty list), or None if anything is wrong."""
+
+    if raw is None:
+        return []
+
+    # A cheap cap before looping, so a huge list costs nothing
+    if not isinstance(raw, list) or len(raw) > 50:
+        return None
+
+    ids: list[str] = []
+
+    for value in raw:
+        if not isinstance(value, str):
+            return None
+
+        try:
+            canonical = str(uuid.UUID(value))
+        except ValueError:
+            return None
+
+        if canonical not in ids:
+            ids.append(canonical)
+
+    return ids if len(ids) <= MAX_DOCUMENT_IDS else None
 
 
 async def answer_question(
@@ -79,6 +128,7 @@ async def answer_question(
     query: str,
     user_message_id: str | None = None,
     regenerate: bool = False,
+    document_ids: list[str] = (),
 ) -> None:
     """Ask the chat service and pass what it says on to the browser.
 
@@ -90,6 +140,9 @@ async def answer_question(
     cancels the gRPC call, and the service stops writing.
     """
 
+    set_request_id()  # [log]
+    _started = time.monotonic()  # [log]
+    logger.info("Question started: conversation=%s documents=%d regenerate=%s", conversation_id, len(document_ids or ()), regenerate)  # [log]
     results: list[dict] = []
     parts: list[str] = []
     final_answer: str | None = None
@@ -100,6 +153,10 @@ async def answer_question(
 
     if user_message_id and regenerate:
         extra["regenerate"] = True
+
+    # Only passed when documents were chosen
+    if document_ids:
+        extra["document_ids"] = list(document_ids)
 
     events = chat_client.chat(user_id, conversation_id, query, **extra)
 
@@ -132,7 +189,7 @@ async def answer_question(
         logger.warning("Chat service error %s: %s", error.code.name, error.message)
 
         await send({
-            "error": SERVICE_ERROR_MESSAGES.get(error.code, GENERIC_ERROR),
+            "error": service_error_text(error),
             "conversation_id": conversation_id,
         })
         return
@@ -152,6 +209,7 @@ async def answer_question(
         await events.aclose()
 
     answer = final_answer if final_answer is not None else "".join(parts)
+    logger.info("Question answered: conversation=%s cancelled=%s chars=%d ms=%d", conversation_id, cancelled, len(final_answer or "".join(parts)), int((time.monotonic() - _started) * 1000))  # [log]
 
     await send({
         "type": "done",
@@ -343,6 +401,16 @@ async def chat(websocket: WebSocket):
                         "conversation_id": conversation_id,
                     })
                     continue
+            # Documents to search besides the chat (max 5, each a UUID)
+            document_ids = parse_document_ids(data.get("document_ids"))
+
+            if document_ids is None:
+                await send({
+                    "error": "Invalid document id.",
+                    "conversation_id": conversation_id,
+                })
+                continue
+
             # Forget answers that have finished
             for key in [k for k, t in turns.items() if not t.running]:
                 del turns[key]
@@ -374,6 +442,7 @@ async def chat(websocket: WebSocket):
                     query,
                     user_message_id,
                     regenerate,
+                    document_ids,
                 )
             )
 

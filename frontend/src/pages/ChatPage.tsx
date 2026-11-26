@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Identity } from "../types";
 import { getHealth } from "../api";
 import { RateLimitError, useChatSocket } from "../hooks/useChatSocket";
 import { useConversations } from "../hooks/useConversations";
 import { useChatMessages } from "../hooks/useChatMessages";
+import { useDocuments } from "../hooks/useDocuments";
 import { Sidebar } from "../components/Sidebar";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
+import { DocumentPanel } from "../components/DocumentPanel";
+import { Toasts } from "../components/toasts";
+import { STATUS_LABELS, isBusy } from "../components/documentStatus";
+import { ACCEPTED_EXTENSIONS } from "../services/documentLimits";
 
 export function ChatPage({
   identity,
@@ -53,7 +58,76 @@ export function ChatPage({
 
   const { status, send, cancel } = useChatSocket(onLogout);
 
+  const {
+    documents,
+    status: documentStatus,
+    uploading,
+    error: documentError,
+    upload: uploadDocument,
+    remove: removeDocument,
+    refresh: reloadDocuments,
+    dismissError: dismissDocumentError,
+    notices: documentNotices,
+    dismissNotice: dismissDocumentNotice,
+  } = useDocuments(onLogout);
+
+  // The documents the user ticked. Only ready documents count, so a document
+  // that was deleted or is not ready is dropped here without extra bookkeeping.
+  const [pickedDocIds, setPickedDocIds] = useState<readonly string[]>([]);
+
+  const selectedDocIds = useMemo(() => {
+    const ready = new Set(
+      documents.filter((d) => d.status === "ready").map((d) => d.id),
+    );
+    return pickedDocIds.filter((id) => ready.has(id));
+  }, [documents, pickedDocIds]);
+
+  const toggleDocument = useCallback((id: string) => {
+    setPickedDocIds((current) =>
+      current.includes(id)
+        ? current.filter((x) => x !== id)
+        : [...current, id],
+    );
+  }, []);
+
   const [draft, setDraft] = useState("");
+
+  // ---- Documents in the chat box -------------------------------------
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+
+  // Esc or a click outside the chat box closes the documents popover
+  useEffect(() => {
+    if (!docsOpen) return;
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDocsOpen(false);
+    };
+
+    const onPointer = (event: MouseEvent) => {
+      if (
+        composerRef.current &&
+        !composerRef.current.contains(event.target as Node)
+      ) {
+        setDocsOpen(false);
+      }
+    };
+
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointer);
+
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointer);
+    };
+  }, [docsOpen]);
+
+  const attachFiles = (files: FileList | null | undefined) => {
+    const file = files?.[0];
+    if (file) void uploadDocument(file);
+  };
 
   // Which chats are waiting for an answer.
   // Several chats can wait at the same time.
@@ -168,6 +242,10 @@ export function ChatPage({
             conversation_id: conversationId,
             user_message_id: messageId,
             regenerate,
+            // Left out when nothing is ticked: no document search at all
+            ...(selectedDocIds.length > 0
+              ? { document_ids: [...selectedDocIds] }
+              : {}),
           },
           handleToken,
         );
@@ -227,6 +305,7 @@ export function ChatPage({
       markSending,
       markSynced,
       removeMessage,
+      selectedDocIds,
       send,
       updateMessage,
     ],
@@ -259,6 +338,8 @@ export function ChatPage({
 
       touchConversation(conversationId, query);
       setDraft("");
+      // The documents popover has done its job once the question is sent
+      setDocsOpen(false);
 
       void sendExistingMessage(query, messageId, conversationId);
     },
@@ -419,6 +500,118 @@ export function ChatPage({
     ],
   );
 
+  // ---- Pieces of the chat box (attachments and buttons) ----------------
+  const attachedDocs = selectedDocIds.flatMap((id) => {
+    const found = documents.find((item) => item.id === id);
+    return found ? [found] : [];
+  });
+
+  const busyDocs = documents.filter((item) => isBusy(item.status));
+  const showDocError = Boolean(documentError) && !docsOpen;
+
+  const attachmentBar =
+    attachedDocs.length > 0 ||
+    busyDocs.length > 0 ||
+    uploading ||
+    showDocError ? (
+      <div className="doc-chips" aria-label="Attached documents">
+        {uploading && (
+          <span className="doc-chip is-busy">
+            <span className="doc-spinner" aria-hidden="true" />
+            <span className="doc-chip-name">Uploading…</span>
+          </span>
+        )}
+
+        {busyDocs.map((item) => (
+          <span className="doc-chip is-busy" key={item.id} title={item.filename}>
+            <span className="doc-spinner" aria-hidden="true" />
+            <span className="doc-chip-name">{item.filename}</span>
+            <span className="doc-chip-state">{STATUS_LABELS[item.status]}</span>
+          </span>
+        ))}
+
+        {attachedDocs.map((item) => (
+          <span className="doc-chip" key={item.id} title={item.filename}>
+            <span aria-hidden="true">📄</span>
+            <span className="doc-chip-name">{item.filename}</span>
+            <button
+              type="button"
+              aria-label={"Stop asking about " + item.filename}
+              onClick={() => toggleDocument(item.id)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+
+        {showDocError && (
+          <span className="doc-chip is-error" role="alert">
+            <span className="doc-chip-name">{documentError}</span>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={dismissDocumentError}
+            >
+              ×
+            </button>
+          </span>
+        )}
+      </div>
+    ) : null;
+
+  const composerTools = (
+    <>
+      <input
+        ref={attachInputRef}
+        id="composer-file-input"
+        className="sr-only"
+        type="file"
+        accept={ACCEPTED_EXTENSIONS.join(",")}
+        tabIndex={-1}
+        onChange={(event) => {
+          const files = event.target.files;
+          attachFiles(files);
+          event.target.value = "";
+        }}
+      />
+
+      <button
+        type="button"
+        className="composer-tool"
+        disabled={uploading}
+        aria-label="Attach a document"
+        title="Attach a document (PDF, DOCX, TXT, MD)"
+        onClick={() => attachInputRef.current?.click()}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="16"
+          height="16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8" />
+        </svg>
+      </button>
+
+      <button
+        type="button"
+        className={"composer-tool composer-tool--text" + (docsOpen ? " is-active" : "")}
+        aria-expanded={docsOpen}
+        onClick={() => setDocsOpen((open) => !open)}
+      >
+        Documents
+        {selectedDocIds.length > 0 && (
+          <span className="composer-badge">{selectedDocIds.length}</span>
+        )}
+      </button>
+    </>
+  );
+
   const handleLogout = () => {
     const confirmed = window.confirm("Are you sure you want to log out?");
 
@@ -522,6 +715,8 @@ export function ChatPage({
           </ErrorBanner>
         )}
 
+        <Toasts notices={documentNotices} onDismiss={dismissDocumentNotice} />
+
         <MessageList
           key={selectedId}
           messages={messages}
@@ -547,17 +742,64 @@ export function ChatPage({
         />
 
         <footer className="composer-area">
-          <ChatInput
-            value={draft}
-            onChange={setDraft}
-            onSend={() => handleSend()}
-            onStop={() => cancel(selectedId)}
-            sending={isSending}
-          />
+          <div
+            ref={composerRef}
+            className={"composer-wrap" + (dragging ? " is-dragging" : "")}
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes("Files")) {
+                event.preventDefault();
+                setDragging(true);
+              }
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                setDragging(false);
+              }
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragging(false);
+              attachFiles(event.dataTransfer.files);
+            }}
+          >
+            {docsOpen && (
+              <div className="doc-popover">
+                <DocumentPanel
+                  documents={documents}
+                  status={documentStatus}
+                  selectedIds={selectedDocIds}
+                  uploading={uploading}
+                  error={documentError}
+                  onToggle={toggleDocument}
+                  onUpload={(file) => void uploadDocument(file)}
+                  onRemove={(id) => void removeDocument(id)}
+                  onDismissError={dismissDocumentError}
+                  onReload={() => void reloadDocuments()}
+                  onClose={() => setDocsOpen(false)}
+                />
+              </div>
+            )}
+
+            {dragging && (
+              <div className="doc-drop" aria-hidden="true">
+                Drop a file to upload it
+              </div>
+            )}
+
+            <ChatInput
+              value={draft}
+              onChange={setDraft}
+              onSend={() => handleSend()}
+              onStop={() => cancel(selectedId)}
+              sending={isSending}
+              header={attachmentBar}
+              tools={composerTools}
+            />
+          </div>
 
           <p className="composer-disclaimer">
-            AI can make mistakes. Related past messages are shown as context,
-            not verified facts.
+            AI can make mistakes. Sources are shown as context, not verified
+            facts.
           </p>
         </footer>
       </section>

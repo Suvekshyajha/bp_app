@@ -16,11 +16,22 @@ import chat_pb2_grpc
 import repository
 from crypto import check_configured
 from database import Base, engine, migrate_schema
+from embeddings import warm_up
 from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
 from retrieval import strip_hidden_characters
 from service_auth import require_service_token
-from turn import Context, Done, Token, TurnInProgress, run_turn
+from turn import (
+    DOC_FIELDS,
+    Context,
+    DocumentNotFound,
+    DocumentNotReady,
+    Done,
+    Token,
+    TurnInProgress,
+    run_turn,
+)
+from common.log import set_request_id, setup_logging
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +60,10 @@ ALLOW_NO_AUTH = os.getenv("CHAT_ALLOW_NO_AUTH", "").lower() == "true"
 # Longest question accepted (the website cuts at the same length). Checked
 # here too, because this service must not trust whoever calls it.
 MAX_QUERY_CHARS = int(os.getenv("MAX_QUERY_CHARS", "4000"))
+
+# Most documents one question may search. Checked here too, because this
+# service must not trust whoever calls it.
+MAX_DOCUMENT_IDS = 5
 
 # ---------- Converting between our data and protobuf ----------
 
@@ -81,16 +96,28 @@ def to_timestamp(value: datetime | str | None) -> Timestamp:
 def to_retrieved_message(item: dict) -> chat_pb2.RetrievedMessage:
     payload = item.get("payload") or {}
 
+    # Only document chunks have these. protobuf does not accept None, and an
+    # empty document_id means "a past chat message".
     return chat_pb2.RetrievedMessage(
         id=item["id"],
         similarity=item["score"],
         role=ROLES.get(payload.get("role"), chat_pb2.ROLE_UNSPECIFIED),
         content=payload.get("content", ""),
         created_at=to_timestamp(payload.get("timestamp")),
+        document_id=payload.get("document_id") or "",
+        filename=payload.get("filename") or "",
+        chunk_index=payload.get("chunk_index") or 0,
+        section_title=payload.get("section_title") or "",
+        page=payload.get("page") or 0,
     )
 
 
 # ---------- Who may call this service ----------
+
+def _trace(context) -> None:
+    """Continue the caller's trace: its request id arrives in the gRPC metadata."""
+    set_request_id(dict(context.invocation_metadata() or ()).get("x-request-id"))
+
 
 class ServiceTokenInterceptor(grpc.aio.ServerInterceptor):
     """Rejects every call that does not carry the shared secret.
@@ -118,6 +145,7 @@ class ServiceTokenInterceptor(grpc.aio.ServerInterceptor):
             given = given.encode()
 
         if not hmac.compare_digest(given, self._expected):
+            logger.warning("Service call refused (bad token): method=%s", handler_call_details.method)  # [log]
             return self._deny
 
         return await continuation(handler_call_details)
@@ -157,19 +185,31 @@ def add_port(server: grpc.aio.Server) -> None:
 def saved_context(items: list[dict]) -> list[dict]:
     """Saved related messages, in the shape to_retrieved_message reads."""
 
-    return [
-        {
+    results = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        payload = {
+            "role": item.get("role"),
+            "content": item.get("content", ""),
+            "timestamp": item.get("timestamp"),
+        }
+
+        # Document chunks keep their file name and part, so the sources of an
+        # old answer still show after a reload
+        if item.get("document_id"):
+            for key in DOC_FIELDS:
+                payload[key] = item.get(key)
+
+        results.append({
             "id": item.get("id", ""),
             "score": item.get("score", 0.0),
-            "payload": {
-                "role": item.get("role"),
-                "content": item.get("content", ""),
-                "timestamp": item.get("timestamp"),
-            },
-        }
-        for item in items
-        if isinstance(item, dict)
-    ]
+            "payload": payload,
+        })
+
+    return results
 
 
 # ---------- Chat ----------
@@ -179,6 +219,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     async def Chat(self, request, context):
         # Hidden characters are removed BEFORE the question is saved or sent
         # to the model, so they can never carry instructions.
+        _trace(context)  # [log]
         query = strip_hidden_characters(request.query).strip()
 
         if (
@@ -186,12 +227,14 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             or not request.conversation_id
             or not query
         ):
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id, conversation_id and query are required")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id, conversation_id and query are required",
             )
 
         if len(query) > MAX_QUERY_CHARS:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, f"query must be at most {MAX_QUERY_CHARS} characters")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"query must be at most {MAX_QUERY_CHARS} characters",
@@ -205,10 +248,34 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             try:
                 extra["user_message_id"] = str(uuid.UUID(request.user_message_id))
             except ValueError:
+                logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_message_id must be a UUID")  # [log]
                 await context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     "user_message_id must be a UUID",
                 )
+
+        # The documents to search besides the chat: at most 5, each a UUID.
+        # Written in one canonical form, so the same document is never
+        # searched twice.
+        document_ids = list(dict.fromkeys(request.document_ids))
+
+        if len(document_ids) > MAX_DOCUMENT_IDS:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, f"at most {MAX_DOCUMENT_IDS} documents can be searched at once")  # [log]
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"at most {MAX_DOCUMENT_IDS} documents can be searched at once",
+            )
+
+        try:
+            document_ids = list(
+                dict.fromkeys(str(uuid.UUID(value)) for value in document_ids)
+            )
+        except ValueError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "document_ids must be UUIDs")  # [log]
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "document_ids must be UUIDs",
+            )
 
         try:
             async with aclosing(
@@ -217,6 +284,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     request.conversation_id,
                     query,
                     regenerate=request.regenerate,
+                    document_ids=document_ids,
                     **extra,
                 )
             ) as events:
@@ -243,27 +311,45 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                         )
 
         except TurnInProgress:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.ABORTED.name, "This message is already being answered.")  # [log]
             await context.abort(
                 grpc.StatusCode.ABORTED,
                 "This message is already being answered.",
             )
 
         except ConversationNotFound:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Conversation not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
+        except DocumentNotFound:
+            # The orchestrator tells this apart from a missing chat by the
+            # text, which starts with "Document"
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Document not found.")  # [log]
+            await context.abort(grpc.StatusCode.NOT_FOUND, "Document not found.")
+
+        except DocumentNotReady:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.FAILED_PRECONDITION.name, "Document is still being processed.")  # [log]
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "Document is still being processed.",
+            )
+
         except groq.RateLimitError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.RESOURCE_EXHAUSTED.name, "The language model is busy. Try again shortly.")  # [log]
             await context.abort(
                 grpc.StatusCode.RESOURCE_EXHAUSTED,
                 "The language model is busy. Try again shortly.",
             )
 
         except groq.APITimeoutError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.DEADLINE_EXCEEDED.name, "The language model took too long to answer.")  # [log]
             await context.abort(
                 grpc.StatusCode.DEADLINE_EXCEEDED,
                 "The language model took too long to answer.",
             )
 
         except groq.APIConnectionError:
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.UNAVAILABLE.name, "Could not reach the language model.")  # [log]
             await context.abort(
                 grpc.StatusCode.UNAVAILABLE,
                 "Could not reach the language model.",
@@ -271,6 +357,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
         except Exception:
             logger.exception("Chat turn failed")
+            logger.warning("Chat refused: %s: %s", grpc.StatusCode.INTERNAL.name, "Internal error.")  # [log]
             await context.abort(grpc.StatusCode.INTERNAL, "Internal error.")
 
 
@@ -279,7 +366,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
 
     async def ListConversations(self, request, context):
+        _trace(context)  # [log]
         if not request.user_id:
+            logger.warning("ListConversations refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id is required")  # [log]
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
 
         try:
@@ -291,6 +380,7 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
             )
 
         except InvalidCursor:
+            logger.warning("ListConversations refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "Invalid cursor.")  # [log]
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid cursor.")
 
         return chat_pb2.ListConversationsResponse(
@@ -307,7 +397,9 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
         )
 
     async def ListMessages(self, request, context):
+        _trace(context)  # [log]
         if not request.user_id or not request.conversation_id:
+            logger.warning("ListMessages refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id and conversation_id are required")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id and conversation_id are required",
@@ -323,9 +415,11 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
             )
 
         except ConversationNotFound:
+            logger.warning("ListMessages refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Conversation not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
         except InvalidCursor:
+            logger.warning("ListMessages refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "Invalid cursor.")  # [log]
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid cursor.")
 
         return chat_pb2.ListMessagesResponse(
@@ -346,7 +440,9 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
         )
 
     async def DeleteConversation(self, request, context):
+        _trace(context)  # [log]
         if not request.user_id or not request.conversation_id:
+            logger.warning("DeleteConversation refused: %s: %s", grpc.StatusCode.INVALID_ARGUMENT.name, "user_id and conversation_id are required")  # [log]
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "user_id and conversation_id are required",
@@ -373,6 +469,7 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
                 )
             except Exception:
                 logger.exception("Could not delete the chat from the search index")
+                logger.warning("DeleteConversation refused: %s: %s", grpc.StatusCode.UNAVAILABLE.name, "Could not reach the search index.")  # [log]
                 await context.abort(
                     grpc.StatusCode.UNAVAILABLE,
                     "Could not reach the search index.",
@@ -385,6 +482,7 @@ class HistoryServicer(chat_pb2_grpc.HistoryServiceServicer):
             )
 
         except ConversationNotFound:
+            logger.warning("DeleteConversation refused: %s: %s", grpc.StatusCode.NOT_FOUND.name, "Conversation not found.")  # [log]
             await context.abort(grpc.StatusCode.NOT_FOUND, "Conversation not found.")
 
         return chat_pb2.DeleteConversationResponse()
@@ -404,6 +502,9 @@ async def serve():
     Base.metadata.create_all(bind=engine)
     migrate_schema()
     await asyncio.to_thread(create_collection)
+
+    # Load the embedding models now, so the first chat turn is not slow
+    await asyncio.to_thread(warm_up)
 
     if token:
         server = grpc.aio.server(interceptors=[ServiceTokenInterceptor(token)])
@@ -427,5 +528,5 @@ async def serve():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    setup_logging("retriever")
     asyncio.run(serve())

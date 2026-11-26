@@ -258,3 +258,35 @@ describe("removeChat", () => {
     expect(result.current.messages).toEqual([]);
   });
 });
+
+describe("saved sources", () => {
+  it("keeps the sources an answer was written with when a chat is loaded", async () => {
+    const source = {
+      id: "d1:0",
+      payload: { document_id: "d1", filename: "report.pdf", chunk_index: 0, content: "Revenue grew." },
+    };
+
+    getMessagesMock.mockResolvedValue({
+      items: [serverMessage("u1", "user"), { ...serverMessage("a1", "assistant"), results: [source] }],
+      next_cursor: null,
+    });
+
+    const { result } = renderHook(() => useChatMessages("chat-a", false));
+    await waitFor(() => expect(result.current.historyStatus).toBe("ready"));
+
+    expect(result.current.messages[1].context).toEqual([source]);
+  });
+
+  it("gives a message with no sources no context", async () => {
+    getMessagesMock.mockResolvedValue({
+      items: [{ ...serverMessage("a1", "assistant"), results: [] }, serverMessage("u1", "user")],
+      next_cursor: null,
+    });
+
+    const { result } = renderHook(() => useChatMessages("chat-a", false));
+    await waitFor(() => expect(result.current.historyStatus).toBe("ready"));
+
+    expect(result.current.messages[0].context).toBeUndefined();
+    expect(result.current.messages[1].context).toBeUndefined();
+  });
+});

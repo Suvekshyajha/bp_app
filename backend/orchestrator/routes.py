@@ -16,6 +16,9 @@ from auth import (
     set_session_cookie,
     verify_password,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -106,6 +109,7 @@ def login(
         )
 
     # A new session on every login
+    logger.info("Login: user=%s", user.id)  # [log]
     set_session_cookie(response, create_session(db, user.id))
 
     return {

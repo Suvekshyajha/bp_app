@@ -11,7 +11,7 @@ import grpc
 import pytest
 import pytest_asyncio
 
-from backend.retriever.qdrant_store import delete_message_points
+from qdrant_store import delete_message_points
 import chat_pb2
 import chat_pb2_grpc
 
@@ -21,6 +21,8 @@ indexed: dict[str, dict] = {}   # message_id -> {"user_id", "conversation_id"}
 deleted_calls: list[tuple] = []
 retrieved: list[dict] = []      # what the fake search returns next
 fail_index_delete = {"on": False}
+doc_hits: list[dict] = []       # what the fake document search returns next
+doc_states: dict[str, str] = {}  # document id -> "ready"/"processing"/"missing" (default ready)
 
 
 def _fake_modules():
@@ -53,20 +55,36 @@ def _fake_modules():
 
     retrieval = types.ModuleType("retrieval")
     retrieval.retrieve_messages = lambda **kwargs: list(retrieved)
-
+    retrieval.strip_hidden_characters = lambda text: text
     llm = types.ModuleType("llm")
 
-    async def stream_response(query, results, history):
+    async def stream_response(query, results, history, documents=None):
         for piece in ["Hel", "lo"]:
             yield piece
 
     llm.stream_response = stream_response
 
-    return {"qdrant_store": store, "retrieval": retrieval, "llm": llm}
+    doc_retrieval = types.ModuleType("doc_retrieval")
+    doc_retrieval.document_states = lambda user_id, ids: {
+        i: doc_states.get(i, "ready") for i in ids
+    }
+    doc_retrieval.retrieve_document_chunks = lambda **kwargs: list(doc_hits)
+
+    embeddings = types.ModuleType("embeddings")
+    embeddings.embed_query = lambda text: {"dense": [1.0], "sparse": {"indices": [], "values": []}}
+    embeddings.warm_up = lambda: None
+
+    return {
+        "qdrant_store": store,
+        "retrieval": retrieval,
+        "llm": llm,
+        "doc_retrieval": doc_retrieval,
+        "embeddings": embeddings,
+    }
 
 
 def _import_service():
-    names = ["qdrant_store", "retrieval", "llm", "turn", "main"]
+    names = ["qdrant_store", "retrieval", "llm", "doc_retrieval", "embeddings", "turn", "main"]
     saved = {n: sys.modules.get(n) for n in names}
 
     for n in names:
@@ -102,6 +120,8 @@ async def stubs():
     indexed.clear()
     deleted_calls.clear()
     retrieved.clear()
+    doc_hits.clear()
+    doc_states.clear()
     fail_index_delete["on"] = False
 
     server = grpc.aio.server(interceptors=[service.ServiceTokenInterceptor(TOKEN)])
@@ -345,3 +365,68 @@ async def test_calls_without_the_right_token_are_refused(stubs, metadata):
     assert error.value.code() == grpc.StatusCode.UNAUTHENTICATED
 
     assert not repository.conversation_exists("conv-0001-aaaa")
+
+
+# ---------- Documents (step 5) ----------
+
+DOC = "11111111-1111-4111-8111-111111111111"
+
+
+def document_request(document_ids):
+    return chat_pb2.ChatRequest(
+        user_id="u1",
+        conversation_id="conv-0001-aaaa",
+        query="what was revenue",
+        document_ids=document_ids,
+    )
+
+
+@pytest.mark.asyncio
+async def test_document_excerpts_are_stored_with_the_answer_and_listed_in_history(stubs):
+    chat, history, auth = stubs
+    doc_hits.append({
+        "id": "chunk-1",
+        "score": 0.81,
+        "payload": {
+            "document_id": DOC,
+            "filename": "report.pdf",
+            "chunk_index": 2,
+            "section_title": "Results",
+            "page": 3,
+            "content": "Revenue was five.",
+            "role": None,
+            "timestamp": "2026-11-01T10:00:00+00:00",
+        },
+    })
+
+    events = [e async for e in chat.Chat(document_request([DOC]), metadata=auth)]
+
+    live = events[0].context.messages[0]
+    assert (live.document_id, live.filename, live.page) == (DOC, "report.pdf", 3)
+
+    page = await history.ListMessages(
+        chat_pb2.ListMessagesRequest(user_id="u1", conversation_id="conv-0001-aaaa"),
+        metadata=auth,
+    )
+    saved = page.messages[1].context[0]
+
+    assert (saved.document_id, saved.filename, saved.chunk_index) == (DOC, "report.pdf", 2)
+    assert (saved.section_title, saved.page, saved.content) == ("Results", 3, "Revenue was five.")
+
+
+@pytest.mark.asyncio
+async def test_a_document_that_is_not_ready_saves_nothing(stubs):
+    chat, history, auth = stubs
+    doc_states[DOC] = "processing"
+
+    with pytest.raises(grpc.aio.AioRpcError) as error:
+        async for _ in chat.Chat(document_request([DOC]), metadata=auth):
+            pass
+
+    assert error.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+    page = await history.ListMessages(
+        chat_pb2.ListMessagesRequest(user_id="u1", conversation_id="conv-0001-aaaa"),
+        metadata=auth,
+    )
+    assert list(page.messages) == []

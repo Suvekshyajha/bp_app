@@ -66,7 +66,8 @@ class FakeModel:
     tokens       what it writes, one piece at a time
     fail_after   raise RuntimeError before writing token number N
     block_after  wait forever before writing token number N (until cancelled)
-    calls        one dict per call: query, context, history
+    calls        one dict per call: query, context, history, documents,
+                 available_documents
     closed       True once the stream has been closed or has finished
     """
 
@@ -77,8 +78,14 @@ class FakeModel:
         self.calls = []
         self.closed = False
 
-    async def stream(self, query, context, history=None):
-        self.calls.append({"query": query, "context": context, "history": history})
+    async def stream(self, query, context, history=None, documents=None, available_documents=None):
+        self.calls.append({
+            "query": query,
+            "context": context,
+            "history": history,
+            "documents": documents,
+            "available_documents": available_documents,
+        })
         self.closed = False
 
         try:
@@ -147,4 +154,104 @@ def retrieved(monkeypatch):
 
     fake = FakeSearch()
     monkeypatch.setattr(turn, "retrieve_messages", fake)
+    return fake
+
+@pytest.fixture(autouse=True)
+def no_real_models(monkeypatch):
+    """No test may load a real embedding model (slow, may use the network)."""
+    import common.embeddings as emb
+
+    attempts = []
+
+    def refuse(*args, **kwargs):
+        attempts.append(1)
+        raise RuntimeError("tried to load a real embedding model")
+
+    monkeypatch.setattr(emb, "get_dense", refuse)
+    monkeypatch.setattr(emb, "get_sparse", refuse)
+    yield
+    assert not attempts, "this test (or a background task it started) tried to load a real embedding model"
+
+
+# ---------------------------------------------------------------------------
+# Document search fakes (step 5). `turn` talks to doc_retrieval and to
+# embed_query; both are replaced here, so no test needs Qdrant or a model.
+# ---------------------------------------------------------------------------
+
+DOC_VECTORS = {"dense": [1.0, 0.0], "sparse": {"indices": [1], "values": [1.0]}}
+
+
+@pytest.fixture(autouse=True)
+def no_real_document_store(monkeypatch):
+    """A turn looks up the user's documents when none is chosen, and no test
+    may reach a real Qdrant for that. By default "no document was ever
+    ingested": doc_retrieval answers from that without a network call. Tests
+    that need documents use the doc_search fixture below (or install their own
+    fake client, like test_doc_retrieval.py)."""
+
+    import doc_retrieval
+
+    monkeypatch.setattr(doc_retrieval, "_collection_exists", lambda: False)
+
+
+class FakeDocSearch:
+    """Stands in for doc_retrieval and embed_query.
+
+    states        document id -> "ready" / "processing" / "missing"
+                  (an id that is not listed is "ready")
+    results       the excerpts the search returns
+    error         if set, the excerpt search raises it
+    library       the user's documents: [{"document_id", "filename"}]
+    library_error if set, listing the documents raises it
+    calls         the keyword arguments of every excerpt search
+    state_calls   (user_id, document_ids) of every status check
+    library_calls the user id of every document listing
+    embeds        the text of every question that was embedded
+    """
+
+    def __init__(self):
+        self.states = {}
+        self.results = []
+        self.error = None
+        self.library = []
+        self.library_error = None
+        self.calls = []
+        self.state_calls = []
+        self.library_calls = []
+        self.embeds = []
+
+    def embed_query(self, text):
+        self.embeds.append(text)
+        return DOC_VECTORS
+
+    def document_states(self, user_id, document_ids):
+        self.state_calls.append((user_id, list(document_ids)))
+        return {d: self.states.get(d, "ready") for d in document_ids}
+
+    def list_documents(self, user_id):
+        self.library_calls.append(user_id)
+
+        if self.library_error:
+            raise self.library_error
+
+        return list(self.library)
+
+    def retrieve_document_chunks(self, **kwargs):
+        self.calls.append(kwargs)
+
+        if self.error:
+            raise self.error
+
+        return list(self.results)
+
+
+@pytest.fixture
+def doc_search(monkeypatch):
+    import turn
+
+    fake = FakeDocSearch()
+    monkeypatch.setattr(turn, "embed_query", fake.embed_query)
+    monkeypatch.setattr(turn.doc_retrieval, "document_states", fake.document_states)
+    monkeypatch.setattr(turn.doc_retrieval, "list_documents", fake.list_documents)
+    monkeypatch.setattr(turn.doc_retrieval, "retrieve_document_chunks", fake.retrieve_document_chunks)
     return fake

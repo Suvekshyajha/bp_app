@@ -1,5 +1,11 @@
 import { API_BASE_URL } from "./config";
-import type { Page, ServerConversation, ServerMessage } from "./types";
+import type {
+  DocumentInfo,
+  Page,
+  ServerConversation,
+  ServerDocument,
+  ServerMessage,
+} from "./types";
 
 export interface HealthResponse {
   status: string;
@@ -89,4 +95,68 @@ export async function logoutRequest(): Promise<void> {
     method: "POST",
     credentials: "include",
   });
+}
+
+
+// ---- Documents -------------------------------------------------------
+
+function toDocument(item: ServerDocument): DocumentInfo {
+  return {
+    id: item.id,
+    filename: item.filename,
+    status: item.status,
+    stage: item.stage ?? undefined,
+    error: item.error ?? undefined,
+    chunkCount: item.chunk_count ?? undefined,
+    createdAt: item.created_at ?? new Date(0).toISOString(),
+  };
+}
+
+// Turns a failed response into an Error. The server explains itself in
+// {"detail": "..."}; that text is meant for the user ("File is larger than ...").
+async function documentError(response: Response): Promise<Error> {
+  if (response.status === 401) return new UnauthorizedError();
+  if (response.status === 404) return new NotFoundError();
+
+  let detail = "";
+
+  try {
+    const body = (await response.json()) as { detail?: unknown };
+    if (typeof body.detail === "string") detail = body.detail;
+  } catch {
+    // not JSON: use the generic text below
+  }
+
+  return new Error(detail || "HTTP " + response.status);
+}
+
+// All of the user's documents (the server answers with a plain list)
+export async function getDocuments(): Promise<DocumentInfo[]> {
+  const list = await getJson<ServerDocument[]>("/api/documents");
+  return list.map(toDocument);
+}
+
+// Sends one file. The browser adds the multipart header and Content-Length.
+export async function uploadDocument(file: File): Promise<DocumentInfo> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const response = await fetch(API_BASE_URL + "/api/documents", {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+
+  if (!response.ok) throw await documentError(response);
+
+  return toDocument((await response.json()) as ServerDocument);
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  const response = await fetch(
+    API_BASE_URL + "/api/documents/" + encodeURIComponent(id),
+    { method: "DELETE", credentials: "include" },
+  );
+
+  if (!response.ok) throw await documentError(response);
 }
