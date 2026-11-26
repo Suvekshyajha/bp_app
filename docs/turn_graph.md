@@ -38,7 +38,8 @@ graph TD;
 	emit_context --> save_question;
 	load_history --> plan_search;
 	plan_search --> retrieve_chat;
-	retrieve_chat --> retrieve_docs;
+	plan_search --> retrieve_docs;
+	retrieve_chat --> emit_context;
 	retrieve_docs --> emit_context;
 	save_question --> generate;
 	generate --> __end__;
@@ -83,11 +84,31 @@ save is skipped when the stream raised.
   with the same signature and the same event order.
 - **No checkpointer.** SQLite and Qdrant stay the only places where anything is
   saved.
+- **The two searches run in parallel.** `plan_search` has two edges out
+  (`retrieve_chat`, `retrieve_docs`) and `emit_context` is joined to both
+  (`add_edge([...], "emit_context")`), so it waits for both. They write
+  different state keys (`chat_results`, `doc_results`), so no reducer is
+  needed. The question is still embedded once, in `plan_search`, before the
+  fan-out. Each search swallows its own errors, so one failing never stops the
+  other or the answer. The `_jobs` semaphore still limits CPU work to 4 at a time.
 - **The question is saved after both searches** (`save_question` comes after
-  `retrieve_chat`, `retrieve_docs` and `emit_context`), so it cannot retrieve itself.
+  `emit_context`, which waits for both searches), so it cannot retrieve itself.
+- **Not done on purpose:** a retry edge for the Groq call (see below) and moving
+  the claim into the graph (the claim is per process; it only makes sense in the
+  graph together with a database lock).
 - **The graph is built once per `turn` module** (`get_graph(turn._graph_nodes())`).
   `run_turn` hands over its own node functions instead of letting `turn_graph`
   do `import turn`: the tests load a private copy of `turn` with fake modules,
   and its nodes must be the ones that run.
+- **Log order:** the two search nodes can log in either order, because they run together.
 - **One log line per node:** `node=<name> ms=<int>`, never any question, answer or
   document text. The request id comes from the logging context.
+
+## Why the Groq retry was not added
+
+LangGraph's `RetryPolicy` re-runs a whole node. `generate` streams tokens to the
+client as it goes, so a re-run after the first token would send the start of the
+answer twice. A safe retry would have to live inside `generate`, only for a
+connection error before the first token, and `main.py` already turns Groq
+errors into gRPC status codes the frontend handles. Add it only if connection
+errors show up in real use.
