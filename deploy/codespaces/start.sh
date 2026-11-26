@@ -40,6 +40,14 @@ EOF
     echo "Created deploy/codespaces/.env"
 fi
 
+# Codespaces drops large packets, so downloads time out at the default size
+# (see compose.yml). Reset at every codespace start, so it is set every time.
+if [ -n "${CODESPACE_NAME:-}" ]; then
+    if ! sudo ip link set dev eth0 mtu 1400; then
+        echo "Warning: could not lower the packet size; downloads may time out." >&2
+    fi
+fi
+
 docker compose up -d --build
 
 echo "Waiting for the backend (the AI models need a moment to load)..."
@@ -70,6 +78,15 @@ fi
 
 echo
 echo "Backend is running."
+
+# The answers come from Groq: make sure the retriever can reach it
+if ! docker compose exec -T retriever python -c "
+import socket, ssl
+raw = socket.create_connection(('api.groq.com', 443), 15)
+ssl.create_default_context().wrap_socket(raw, server_hostname='api.groq.com').close()
+" >/dev/null 2>&1; then
+    echo "Warning: the retriever cannot reach api.groq.com, so chat answers will fail." >&2
+fi
 
 if [ -z "${CODESPACE_NAME:-}" ]; then
     echo "Not inside a codespace. Local address: http://localhost:$PORT"

@@ -2,6 +2,7 @@ import pytest
 
 import qdrant_docs
 from common.crypto import decrypt
+from common.settings import DENSE_DIM
 from doc_model import Chunk
 from fakes import FakeQdrant
 
@@ -18,7 +19,7 @@ def chunks(count=3):
 
 
 def vectors(count=3):
-    return [{"dense": [0.1] * 768, "sparse": {"indices": [1, 2], "values": [0.5, 0.5]}} for _ in range(count)]
+    return [{"dense": [0.1] * DENSE_DIM, "sparse": {"indices": [1, 2], "values": [0.5, 0.5]}} for _ in range(count)]
 
 
 def store(user="u1", doc="d1", file_hash="h" * 64, **kw):

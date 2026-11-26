@@ -1,0 +1,56 @@
+"""The retriever's settings that depend on which dense model is used."""
+
+import importlib.util
+import warnings
+from pathlib import Path
+
+import dotenv
+import pytest
+from qdrant_client import QdrantClient
+
+import qdrant_store
+from common.settings import DENSE_DIM, MESSAGES_COLLECTION
+
+SERVICE = Path(__file__).resolve().parent.parent
+
+
+def test_messages_go_to_a_new_collection_sized_for_the_model(monkeypatch):
+    """Vectors of two models must never share a collection, so the model change
+    comes with a new collection name."""
+
+    local = QdrantClient(":memory:")
+    monkeypatch.setattr(qdrant_store, "client", local)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # local mode has no payload indexes
+        qdrant_store.create_collection()
+
+    assert qdrant_store.COLLECTION_NAME == MESSAGES_COLLECTION == "chat_messages_v2"
+    info = local.get_collection(MESSAGES_COLLECTION)
+    assert info.config.params.vectors["dense"].size == DENSE_DIM
+
+
+def _fresh(name):
+    """Load a module again, under another name, so its defaults can be read."""
+
+    spec = importlib.util.spec_from_file_location(f"{name}_defaults", SERVICE / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def no_tuning(monkeypatch):
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.delenv("RETRIEVAL_MIN_SIMILARITY", raising=False)
+    monkeypatch.delenv("RETRIEVAL_SELECTED_MIN_SIMILARITY", raising=False)
+
+
+def test_default_thresholds_fit_the_granite_score_range(no_tuning):
+    """Unrelated text scores about 0.74 with this model, so a low floor would
+    let everything through."""
+
+    assert _fresh("retrieval").MIN_SIMILARITY == 0.79
+    documents = _fresh("doc_retrieval")
+    assert documents.MIN_SIMILARITY == 0.79
+    assert documents.SELECTED_MIN_SIMILARITY == 0.65

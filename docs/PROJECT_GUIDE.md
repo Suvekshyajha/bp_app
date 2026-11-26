@@ -78,7 +78,7 @@ graph TD
 
 | Use | Model |
 |---|---|
-| Meaning (dense) vectors, 768 numbers | `BAAI/bge-base-en-v1.5` |
+| Meaning (dense) vectors, 384 numbers | `ibm-granite/granite-embedding-small-english-r2` |
 | Keyword (sparse) vectors | `Qdrant/bm25` |
 | Writing answers and rewriting questions | Groq, `openai/gpt-oss-120b` (`GROQ_MODEL`) |
 | Choosing how to cut a document | `INGEST_ANALYSIS_MODEL`, same default |
@@ -404,6 +404,7 @@ Events (`Context`, `Token`, `Done`) are sent through LangGraph's custom stream, 
 | `database.py`, `models.py` | `migrate_schema`, `Conversation`, `Message` | SQLite |
 | `migrate_from_orchestrator.py` | `main` | One-time copy of old chats |
 | `encrypt_existing.py` | script | Encrypts old plain text; `--qdrant`, `--rekey` |
+| `reembed_collections.py` | script | One-off after an embedding model change: re-embeds stored text into the new collections |
 | `encrpt_existing.py` | script | Older misspelled copy; does not encrypt `context` |
 
 ### 5.4 Ingestion API and worker
@@ -583,8 +584,8 @@ Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `ABORTED`, `FAILED_PRECONDITION`, `RESO
 | Orchestrator `chat.db` | `users`, `sessions` | Password hashed, session token hashed | Name, email |
 | Retriever `chat.db` | `conversations`, `messages` | Title, content, saved sources | Ids, role, times |
 | `ingest.db` | `documents` | File name, analysis, report | Ids, file hash, type, status |
-| Qdrant `chat_messages` | One point per message | `content` | Vectors, user id, chat id, role, time |
-| Qdrant `document_chunks` | One point per chunk | File name, section title, content | Vectors, user id, document id, page, status |
+| Qdrant `chat_messages_v2` | One point per message | `content` | Vectors, user id, chat id, role, time |
+| Qdrant `document_chunks_v2` | One point per chunk | File name, section title, content | Vectors, user id, document id, page, status |
 | Upload folder | File while its job runs | — | The file itself |
 | Browser `localStorage` | Name, email, user id, selected and hidden chats | — | All of it |
 
@@ -723,8 +724,8 @@ Each service reads its own `.env`. Copy from `.env.example`. Never commit real v
 | `CHAT_BIND_HOST`, `CHAT_SERVICE_PORT` | `127.0.0.1`, 50051 |
 | `CHAT_TLS_CERT`, `CHAT_TLS_KEY`, `CHAT_TLS_CLIENT_CA` | empty |
 | `CHAT_DB_PATH` | `./chat.db` |
-| `RETRIEVAL_MIN_SIMILARITY` | 0.5 (the example file shows 0.42) |
-| `RETRIEVAL_SELECTED_MIN_SIMILARITY`, `RETRIEVAL_SMALL_SELECTION_CHUNKS` | 0.2, 4 |
+| `RETRIEVAL_MIN_SIMILARITY` | 0.79 |
+| `RETRIEVAL_SELECTED_MIN_SIMILARITY`, `RETRIEVAL_SMALL_SELECTION_CHUNKS` | 0.65, 4 |
 | `PROMPT_BUDGET_CHARS`, `DOC_BUDGET_CHARS`, `MAX_AVAILABLE_DOCUMENTS` | 24000, 12000, 50 |
 | `MAX_QUERY_CHARS` | 4000 |
 | `REWRITE_MODEL`, `REWRITE_TIMEOUT_SECONDS` | same as `GROQ_MODEL`, 5 |

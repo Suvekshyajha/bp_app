@@ -102,8 +102,8 @@ Ingestion service (owns ingest.db: one `documents` table, job state = its status
   ⑤ WRITE (upsert, set_payload, delete) ──► Qdrant
 
 Qdrant
-  chat_messages     retriever reads and writes
-  document_chunks   ingestion writes, retriever reads only
+  chat_messages_v2     retriever reads and writes
+  document_chunks_v2   ingestion writes, retriever reads only
 ```
 
 - **Upload:** Browser ► Orchestrator (checks, user id) ► Ingestion API (`pending`) ► Worker (`processing`) ► Qdrant ► `ready`. The browser lists its documents every 2 seconds while any is `pending` or `processing`, and shows a toast when one finishes or fails.
@@ -140,7 +140,7 @@ New files for this feature: `orchestrator/documents.py` and `ingest_client.py`, 
 
 - Orchestrator ↔ Ingestion: HTTP with a shared service token (`INGEST_SERVICE_TOKEN`) and an `X-User-Id` header. The user id is the session's, never the browser's, and the ingestion service trusts it, so **keep port 8100 on an internal network** (or use TLS).
 
-- Ingestion ↔ Qdrant: writes the document chunks (`document_chunks`). The retriever and the ingestion service never call each other.
+- Ingestion ↔ Qdrant: writes the document chunks (`document_chunks_v2`). The retriever and the ingestion service never call each other.
 
 - A document id that does not exist and one that belongs to another user give the same "not found" answer.
 
@@ -283,11 +283,11 @@ There is no shared stream between users any more, so a slow answer never holds u
 
 Each saved message is turned into two kinds of vectors:
 
-- **Dense** (`BAAI/bge-base-en-v1.5`): captures **meaning**.
+- **Dense** (`ibm-granite/granite-embedding-small-english-r2`, 384 numbers): captures **meaning**.
 
 - **Sparse** (`Qdrant/bm25`): captures **keywords**.
 
-A search runs both and merges the two ranked lists with **Reciprocal Rank Fusion (RRF)**. This is called hybrid search. Results are filtered by `user_id` and `conversation_id`, so a user only searches their own messages in that chat. Matches whose dense similarity is below a threshold (default 0.5, set with `RETRIEVAL_MIN_SIMILARITY`) are dropped, so unrelated messages are never handed to the AI.
+A search runs both and merges the two ranked lists with **Reciprocal Rank Fusion (RRF)**. This is called hybrid search. Results are filtered by `user_id` and `conversation_id`, so a user only searches their own messages in that chat. Matches whose dense similarity is below a threshold (default 0.79, set with `RETRIEVAL_MIN_SIMILARITY`) are dropped, so unrelated messages are never handed to the AI.
 
 The vectors are always made from the plain text, **before** the text is encrypted for storage.
 
@@ -298,8 +298,8 @@ Document chunks are searched the same hybrid way, but always filtered by the use
 | Situation | What the AI gets |
 |---|---|
 | **Documents ticked, 4 parts or less in total** | All the parts, in reading order. There is nothing to rank, so no relevance check is applied (`RETRIEVAL_SMALL_SELECTION_CHUNKS`). |
-| **Documents ticked, more parts** | The best 6 parts. Only parts that point away from the question (dense similarity below 0.2, `RETRIEVAL_SELECTED_MIN_SIMILARITY`) are dropped. The user chose the scope, so a weak match is still allowed. |
-| **Nothing ticked** | The best parts of **all** the user's ready documents, with the normal 0.5 threshold, so a question no document covers finds nothing. The AI is also given the names of the documents (at most `MAX_AVAILABLE_DOCUMENTS`). |
+| **Documents ticked, more parts** | The best 6 parts. Only parts that point away from the question (dense similarity below 0.65, `RETRIEVAL_SELECTED_MIN_SIMILARITY`) are dropped. The user chose the scope, so a weak match is still allowed. |
+| **Nothing ticked** | The best parts of **all** the user's ready documents, with the normal 0.79 threshold, so a question no document covers finds nothing. The AI is also given the names of the documents (at most `MAX_AVAILABLE_DOCUMENTS`). |
 
 On top of that:
 
@@ -343,6 +343,14 @@ python encrypt_existing.py --qdrant
 ```
 
 It encrypts the SQLite rows and the Qdrant payloads, then runs a checkpoint and `VACUUM` so old plain text does not stay in the file. It is safe to run again.
+
+**Upgrading from the earlier embedding model** (`bge-base-en-v1.5`): its vectors cannot be searched with the new model, so the new one uses new collections. Start Qdrant, stop the other services, then run once from `backend/retriever`:
+
+```powershell
+python reembed_collections.py
+```
+
+It copies `chat_messages` and `document_chunks` into `chat_messages_v2` and `document_chunks_v2` with new vectors. The old collections are only read. Delete them once you are happy with the results, because they still hold the old (encrypted) text. Do not run the script again after using the app, or anything deleted since is copied back. If your `.env` sets `RETRIEVAL_MIN_SIMILARITY`, change it to the new scale (0.79).
 
 **Key rules**
 
@@ -462,6 +470,7 @@ day2-bp_app/
 │   │   ├── crypto.py         # encryption: key loading and the EncryptedText column type
 │   │   ├── encrypt_existing.py          # one-off: encrypt data stored as plain text
 │   │   ├── migrate_from_orchestrator.py # one-off: copy old chats from the orchestrator's chat.db
+│   │   ├── reembed_collections.py       # one-off: move vectors to a new embedding model
 │   │   ├── llm.py            # Groq streaming, prompt building
 │   │   ├── prompt_budget.py  # keeps the history inside the prompt size limit
 │   │   ├── retrieval.py      # hybrid search of chat messages (decrypts the payload text)
@@ -577,8 +586,8 @@ CHAT_SERVICE_TOKEN=the_token_you_made_for_the_chat_service
 | `CHAT_BIND_HOST`, `CHAT_SERVICE_PORT` | Where the gRPC server listens. Default `127.0.0.1` and `50051`. Use `0.0.0.0` only in Docker or on a server, and then also set the token and TLS. |
 | `CHAT_TLS_CERT`, `CHAT_TLS_KEY`, `CHAT_TLS_CLIENT_CA` | Optional TLS. Set `CHAT_TLS_CERT` and `CHAT_TLS_KEY` together; `CHAT_TLS_CLIENT_CA` turns on mutual TLS. |
 | `CHAT_DB_PATH` | Optional. Keeps the retriever's `chat.db` somewhere other than `backend/retriever`. |
-| `RETRIEVAL_MIN_SIMILARITY` | Optional. Minimum similarity (0 to 1) for a related message, or a document part when no document is chosen, to be used. Default 0.5. |
-| `RETRIEVAL_SELECTED_MIN_SIMILARITY` | Optional. The lower floor used when the user ticked documents. Default 0.2. It is never stricter than `RETRIEVAL_MIN_SIMILARITY`. Set it to 0.5 or more to switch the relaxed floor off. |
+| `RETRIEVAL_MIN_SIMILARITY` | Optional. Minimum similarity (0 to 1) for a related message, or a document part when no document is chosen, to be used. Default 0.79. The scale belongs to the embedding model: unrelated text already scores about 0.74. |
+| `RETRIEVAL_SELECTED_MIN_SIMILARITY` | Optional. The lower floor used when the user ticked documents. Default 0.65. It is never stricter than `RETRIEVAL_MIN_SIMILARITY`. Set it to 0.79 or more to switch the relaxed floor off. |
 | `RETRIEVAL_SMALL_SELECTION_CHUNKS` | Optional. Ticked documents with this many parts or fewer are given to the AI whole. Default 4. |
 | `PROMPT_BUDGET_CHARS` | Optional. Size limit of the whole prompt. Default 24000. |
 | `DOC_BUDGET_CHARS` | Optional. How much document text goes into one prompt. Default 12000. |

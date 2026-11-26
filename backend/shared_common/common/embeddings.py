@@ -8,7 +8,7 @@ orchestrator and the ingestion API process) must never call anything here.
 
 import threading
 
-from common.settings import DENSE_MODEL, SPARSE_MODEL
+from common.settings import DENSE_MAX_TOKENS, DENSE_MODEL, SPARSE_MODEL
 
 __all__ = [
     "get_dense",
@@ -35,7 +35,14 @@ def get_dense():
             if _dense is None:
                 from sentence_transformers import SentenceTransformer
 
-                _dense = SentenceTransformer(DENSE_MODEL)
+                # The weights are saved as bfloat16, which is several times
+                # slower than float32 on an ordinary CPU.
+                model = SentenceTransformer(
+                    DENSE_MODEL,
+                    model_kwargs={"dtype": "float32"},
+                )
+                model.max_seq_length = DENSE_MAX_TOKENS
+                _dense = model
 
     return _dense
 
@@ -96,13 +103,9 @@ embed_passages = embed_messages
 def embed_query(text: str) -> dict:
     """Generate embeddings for a conversational search query."""
 
-    query = (
-        "Represent this sentence for searching relevant passages: "
-        + text
-    )
-
+    # Granite takes the question as it is: no instruction prefix
     dense_vector = get_dense().encode(
-        query,
+        text,
         normalize_embeddings=True,
     )
 
@@ -120,7 +123,7 @@ def embed_query(text: str) -> dict:
 def count_tokens(text: str) -> int:
     """Tokens the dense model would read (no special tokens added).
 
-    Chunk sizes are measured in these, because bge-base reads at most 512.
+    Chunk sizes are measured in these.
     """
 
     return len(get_dense().tokenizer.encode(text, add_special_tokens=False))
