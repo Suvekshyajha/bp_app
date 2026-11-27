@@ -25,7 +25,7 @@ def test_messages_go_to_a_new_collection_sized_for_the_model(monkeypatch):
         warnings.simplefilter("ignore")  # local mode has no payload indexes
         qdrant_store.create_collection()
 
-    assert qdrant_store.COLLECTION_NAME == MESSAGES_COLLECTION == "chat_messages_v2"
+    assert qdrant_store.COLLECTION_NAME == MESSAGES_COLLECTION == "chat_messages_v3"
     info = local.get_collection(MESSAGES_COLLECTION)
     assert info.config.params.vectors["dense"].size == DENSE_DIM
 
@@ -46,11 +46,11 @@ def no_tuning(monkeypatch):
     monkeypatch.delenv("RETRIEVAL_SELECTED_MIN_SIMILARITY", raising=False)
 
 
-def test_default_thresholds_fit_the_granite_score_range(no_tuning):
-    """Unrelated text scores about 0.74 with this model, so a low floor would
-    let everything through."""
+def test_default_thresholds_without_any_tuning(no_tuning):
+    """The score scale belongs to the model. A change of model must come with
+    a deliberate change of these defaults."""
 
-    assert _fresh("retrieval").MIN_SIMILARITY == 0.79
+    assert _fresh("retrieval").MIN_SIMILARITY == 0.5
     documents = _fresh("doc_retrieval")
-    assert documents.MIN_SIMILARITY == 0.79
-    assert documents.SELECTED_MIN_SIMILARITY == 0.65
+    assert documents.MIN_SIMILARITY == 0.5
+    assert documents.SELECTED_MIN_SIMILARITY == 0.2
