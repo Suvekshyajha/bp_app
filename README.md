@@ -76,7 +76,8 @@ A chat app with a memory. You talk to an AI assistant, and it can remember what 
 
 The **retriever** (folder `backend/retriever`, also called the chat service) is the part that owns the conversation: it has its own SQLite database, calls the LLM, searches Qdrant and holds the encryption key. The orchestrator never touches any of those.
 
-<img width="1900" height="1500" alt="architecture_diagram_v2" src="https://github.com/user-attachments/assets/80bc769a-2a7e-4a02-962a-63630c182759" />
+<img width="1800" height="1490" alt="architecture_diagram_v3_final" src="https://github.com/user-attachments/assets/345e3ba6-96a6-4828-9d96-2a906603cdef" />
+
 
 
 ### Documents and the ingestion service
