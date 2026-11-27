@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the ingestion API and its worker in one container: they share
+# Runs the ingestion service and its worker in one container: they share
 # ingest.db and the upload folder, so they must see the same disk.
 # If either process ends, the other is stopped and the container exits,
 # so the host restarts both.

@@ -4,14 +4,14 @@ fastembed==0.9.1
 cryptography==50.0.2
 SQLAlchemy==2.1.9
 psycopg[binary]==3.3.9
-fastapi==0.163.2
-uvicorn==0.54.0
+grpcio==1.85.3
+grpcio-tools==1.85.3
+protobuf==7.36.2
 httpx==0.28.1
 
-# Pin these three with == after you install them:
-#   pip freeze | findstr /i "pypdf python-docx python-multipart groq"
+# Pin these with == after you install them:
+#   pip freeze | findstr /i "pypdf python-docx groq"
 python-dotenv
 pypdf
 python-docx
-python-multipart
 groq

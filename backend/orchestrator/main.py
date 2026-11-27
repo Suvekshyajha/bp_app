@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     yield
     # Close the gRPC channel to the chat service
     await chat_client.close()
-    # ...and the HTTP client to the ingestion service
+    # ...and the one to the ingestion service
     await ingest_client.close()
 
 

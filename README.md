@@ -130,7 +130,7 @@ Browser (React) ──REST + WebSocket (session cookie)──► Orchestrator
                     upload checks (size, type), no document storage
 
   ① chat + user_id + document_ids (gRPC, existing channel) ──► Retriever
-  ② upload / list / status / delete + user_id (HTTP, token) ──► Ingestion API
+  ② upload / list / status / delete + user_id (gRPC, token) ──► Ingestion service
 
 Retriever  (chat service, owns chat.db)
   history · memory search · DOCUMENT search (read only) · LLM · answer + sources
@@ -179,7 +179,7 @@ New files for this feature: `orchestrator/documents.py` and `ingest_client.py`, 
 
 - Retriever ↔ Qdrant: database connection. Chat messages are read and written; document chunks are **read only** (the retriever has no write path to them).
 
-- Orchestrator ↔ Ingestion: HTTP with a shared service token (`INGEST_SERVICE_TOKEN`) and an `X-User-Id` header. The user id is the session's, never the browser's, and the ingestion service trusts it, so **keep port 8100 on an internal network** (or use TLS).
+- Orchestrator ↔ Ingestion: gRPC (the contract is in `backend/proto/ingest.proto`; the file is uploaded as a stream) with a shared service token (`INGEST_SERVICE_TOKEN`) and an `x-user-id` entry in the call metadata. The user id is the session's, never the browser's, and the ingestion service trusts it, so **keep port 8100 on an internal network** (or use TLS).
 
 - Ingestion ↔ Qdrant: writes the document chunks (`document_chunks_v3`). The retriever and the ingestion service never call each other.
 
@@ -414,7 +414,7 @@ The retriever and the ingestion service both trust the user id they are given, s
 | Token | Set in | Used for |
 |---|---|---|
 | `CHAT_SERVICE_TOKEN` | the retriever **and** the orchestrator | gRPC calls to the retriever |
-| `INGEST_SERVICE_TOKEN` | the ingestion service **and** the orchestrator | HTTP calls to the ingestion API |
+| `INGEST_SERVICE_TOKEN` | the ingestion service **and** the orchestrator | gRPC calls to the ingestion service |
 
 Make each one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. A service refuses to start without its token, and refuses an example value such as `change_me`. A token shorter than 16 characters only gives a warning. For local development only, `CHAT_ALLOW_NO_AUTH=true` or `INGEST_ALLOW_NO_AUTH=true` lets a service start without a token, and only while it listens on this machine (`CHAT_BIND_HOST` / `INGEST_BIND_HOST` left at `127.0.0.1`). The orchestrator also stops at start-up if `INGEST_SERVICE_TOKEN` is missing.
 
@@ -427,7 +427,7 @@ Make each one with `python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 For **mutual TLS**, also set `CHAT_TLS_CLIENT_CA` in the retriever, and `CHAT_TLS_CLIENT_CERT` plus `CHAT_TLS_CLIENT_KEY` in the orchestrator. Setting only one of the client certificate and key stops the orchestrator on purpose, because half a pair would silently turn mutual TLS off. In a real deployment use a certificate from your own CA or your hosting provider.
 
-**Ingestion API.** The ingestion API does not serve TLS itself. `INGEST_TLS_CA` in the orchestrator is the certificate that signed the ingestion service's certificate, for when it sits behind something that does (for example a reverse proxy). Otherwise keep port 8100 on an internal network.
+**Ingestion service (TLS optional).** Set `INGEST_TLS_CERT` and `INGEST_TLS_KEY` in the ingestion service and `INGEST_TLS_CA` in the orchestrator (the certificate that signed it). Without them keep port 8100 on an internal network.
 
 **Qdrant.** `docker-compose.yml` reads `QDRANT_API_KEY` from a `.env` file next to it (not committed). Use the same value as `QDRANT_API_KEY` in the retriever's and the ingestion service's `.env`. The key is sent with every request, so over plain `http` (fine on localhost) it is readable on the network: use `https` for a real deployment. The Qdrant client warns about this ("Api key is used with an insecure connection").
 
@@ -462,7 +462,7 @@ Limits of the free plans:
 
 The orchestrator and the retriever write every line as `time LEVEL [service] [request-id] logger: message`.
 
-- **Request id:** the orchestrator makes one per HTTP request and per WebSocket connection (or takes the incoming `x-request-id` header). It sends it to the retriever as gRPC metadata and to the ingestion API as `X-Request-ID`, so one question can be followed across services by searching for its id.
+- **Request id:** the orchestrator makes one per HTTP request and per WebSocket connection (or takes the incoming `x-request-id` header). It sends it to the retriever as gRPC metadata and to the ingestion service the same way, so one question can be followed across services by searching for its id.
 
 - **Level:** set `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) in the orchestrator's or the retriever's `.env`. The default is `INFO`.
 
@@ -518,10 +518,11 @@ day2-bp_app/
 │   │   ├── models.py         # users and sessions
 │   │   ├── chat.db           # SQLite database: users and sessions (created automatically)
 │   │   ├── chat_client.py    # gRPC client for the retriever (token, optional TLS)
-│   │   ├── ingest_client.py  # HTTP client for the ingestion service (token, optional TLS CA)
+│   │   ├── ingest_client.py  # gRPC client for the ingestion service (token, optional TLS CA)
 │   │   ├── make_dev_certs.py # self-signed certificate for local TLS tests
 │   │   ├── chat_pb2.py       # generated from chat.proto (not in git)
 │   │   ├── chat_pb2_grpc.py  # generated from chat.proto (not in git)
+│   │   ├── ingest_pb2*.py    # generated from ingest.proto (not in git)
 │   │   ├── pytest.ini
 │   │   ├── requirements.txt
 │   │   ├── requirements-dev.txt    # adds pytest and httpx
@@ -551,9 +552,9 @@ day2-bp_app/
 │   │   ├── pytest.ini
 │   │   ├── requirements.txt
 │   │   └── tests/            # conftest.py, test_turn.py, test_repository.py, test_grpc.py, test_doc_retrieval.py, ...
-│   ├── ingestion/            # the ingestion service: API (main.py) and worker (worker.py)
+│   ├── ingestion/            # the ingestion service: gRPC server (main.py) and worker (worker.py)
 │   │   ├── .env.example
-│   │   ├── routes.py         # /documents: upload, list, status, delete
+│   │   ├── service.py        # gRPC: upload, list, status, delete (ingest_pb2*.py generated, not in git)
 │   │   ├── jobs.py           # one document job: parse, analyse, chunk, embed, store
 │   │   ├── worker.py         # background worker (runs at low priority)
 │   │   ├── parsers.py, stats.py, analyzer.py, analysis_schema.py, chunking/   # reading and splitting
@@ -562,7 +563,8 @@ day2-bp_app/
 │   │   └── tests/
 │   ├── shared_common/        # package `common`: crypto, service_auth, sanitize, embeddings, settings, log
 │   ├── proto/
-│   │   └── chat.proto        # the gRPC contract (the only copy)
+│   │   ├── chat.proto        # orchestrator <-> retriever
+│   │   └── ingest.proto      # orchestrator <-> ingestion
 │   └── requirements.txt
 ├── docker-compose.yml        # Qdrant
 ├── run-all.ps1               # starts everything on Windows
@@ -668,7 +670,7 @@ CHAT_SERVICE_TOKEN=the_token_you_made_for_the_chat_service
 Add these to `backend/orchestrator/.env` (the defaults are shown; the token is required, and the orchestrator will not start without it):
 
 ```env
-INGEST_SERVICE_URL=http://localhost:8100
+INGEST_SERVICE_ADDRESS=localhost:8100
 INGEST_SERVICE_TOKEN=the_same_token_as_in_the_ingestion_env
 INGEST_TLS_CA=
 MAX_UPLOAD_MB=10
@@ -693,13 +695,13 @@ The ingestion worker will not start without `GEMINI_API_KEY`, the ingestion serv
 | `INGEST_SERVICE_TOKEN` | Required, and the same value in the ingestion service and the orchestrator. |
 | `CHAT_ENCRYPTION_KEYS` (ingestion) | The same keys as the retriever. Document text and file names are encrypted with them. |
 | `QDRANT_URL`, `QDRANT_API_KEY` | The same Qdrant as the retriever. |
-| `INGEST_BIND_HOST`, `INGEST_PORT` | Where the ingestion API listens. Default `127.0.0.1` and `8100`. |
+| `INGEST_BIND_HOST`, `INGEST_PORT` | Where the ingestion service listens (gRPC). Default `127.0.0.1` and `8100`. |
 | `GROQ_API_KEY`, `INGEST_ANALYSIS_MODEL`, `INGEST_ANALYSIS_ENABLED` | Stage 1 of chunking: an AI model picks how a document is split. Without a key, or with `INGEST_ANALYSIS_ENABLED=false`, fixed rules choose and the upload still works. |
 | `MAX_UPLOAD_MB`, `MAX_DOCS_PER_USER` | 10 MB and 20 documents. Keep `MAX_UPLOAD_MB` equal in the orchestrator, the ingestion service and (as `VITE_MAX_UPLOAD_MB`) the frontend. |
 | `INGEST_SEMANTIC_MAX_CHARS`, `INGEST_SEMANTIC_PERCENTILE`, `INGEST_JOB_TIMEOUT_SECONDS` | Tuning. Defaults 80000, 90 and 300. |
 | `INGEST_DB_PATH`, `INGEST_UPLOAD_DIR` | Defaults `./ingest.db` and `./data/uploads`. |
 | `INGEST_ALLOW_NO_AUTH` | Development only, localhost only: start without a token. |
-| `INGEST_SERVICE_URL`, `INGEST_TLS_CA` (orchestrator) | Where and how the orchestrator reaches the ingestion API. |
+| `INGEST_SERVICE_ADDRESS`, `INGEST_TLS_CA` (orchestrator) | Where and how the orchestrator reaches the ingestion API. |
 | `DOC_UPLOAD_RATE_LIMIT` (orchestrator) | Uploads per user per 60 seconds. Default 5. |
 
 Ports: Qdrant 6333, retriever 50051, orchestrator 8000, frontend 5173, **ingestion 8100**.
@@ -750,7 +752,7 @@ docker compose up -d
 # 2. Retriever (in backend\retriever, venv active)
 python main.py
 
-# 3. Ingestion API (in backend\ingestion, venv active)
+# 3. Ingestion service (in backend\ingestion, venv active)
 python main.py
 
 # 4. Ingestion worker (in backend\ingestion, venv active, its own window)
@@ -771,7 +773,7 @@ Start the retriever, the ingestion API and the ingestion worker before the orche
 
 - Qdrant dashboard: http://localhost:6333/dashboard.
 
-- Ingestion health: http://localhost:8100/health should return `{"status": "healthy"}`.
+- Ingestion: its window should say `Ingestion service running on 127.0.0.1:8100 (gRPC)`.
 
 ## Tests
 
@@ -819,7 +821,7 @@ npx vitest run src/api.test.ts        # one frontend file
 
 - **Frontend:** `npm ci`, `npm run lint`, `npm test`, `npm run build` (Node 22).
 
-- **Backend, orchestrator and retriever:** installs `requirements-dev.txt`, generates the gRPC Python files from `backend/proto/chat.proto` (they are not stored in git), then runs `python -m pytest tests` (Python 3.12).
+- **Backend (orchestrator, retriever, ingestion):** installs `requirements-dev.txt`, generates the gRPC Python files from `backend/proto` (they are not stored in git), then runs `python -m pytest` (Python 3.12).
 
 Some modules read a secret when they are imported (for example the Groq key, or `INGEST_SERVICE_TOKEN` in the orchestrator), and a real `.env` is never in git. The workflow's `Test` step therefore gives the tests dummy values. If CI fails at collection with a "... is missing" error, add the missing variable there. The ingestion and shared-package tests are not part of CI yet, so run them locally.
 
@@ -889,7 +891,7 @@ Some modules read a secret when they are imported (for example the Groq key, or 
 
 **Uploading says "The document service is unavailable" (or "could not handle the request")**
 
-- The ingestion API is not running at `INGEST_SERVICE_URL` (start it and check http://localhost:8100/health), or `INGEST_SERVICE_TOKEN` is not the same in `backend/orchestrator/.env` and `backend/ingestion/.env`.
+- The ingestion service is not running at `INGEST_SERVICE_ADDRESS` (start it and look at its window), or `INGEST_SERVICE_TOKEN` is not the same in `backend/orchestrator/.env` and `backend/ingestion/.env`.
 
 **A document ends as "Failed"**
 
@@ -919,7 +921,7 @@ Some modules read a secret when they are imported (for example the Groq key, or 
 
 - **Ingestion shares the encryption key with the retriever on purpose** (one trust zone). Keep both in the same secrets manager.
 
-- **The ingestion port must stay on an internal network** (or sit behind something that serves TLS), because the ingestion service trusts the `X-User-Id` it receives, like the gRPC port. The ingestion API has no TLS of its own.
+- **The ingestion port must stay on an internal network** (or use TLS), because the ingestion service trusts the user id it receives, like the retriever.
 
 - **No OCR, no web pages, no sharing:** scanned PDFs fail with "no readable text", URLs cannot be ingested, and documents cannot be shared between users.
 
@@ -935,11 +937,13 @@ Some modules read a secret when they are imported (for example the Groq key, or 
 
 ## Changing the gRPC contract
 
-`backend/proto/chat.proto` is the only copy of the contract. If you edit it, regenerate the Python files into **both** services from the project root:
+`backend/proto` holds the only copy of each contract. If you edit one, regenerate the Python files into **both** services that use it, from the project root:
 
 ```powershell
 python -m grpc_tools.protoc -I backend/proto --python_out=backend/retriever --grpc_python_out=backend/retriever backend/proto/chat.proto
 python -m grpc_tools.protoc -I backend/proto --python_out=backend/orchestrator --grpc_python_out=backend/orchestrator backend/proto/chat.proto
+python -m grpc_tools.protoc -I backend/proto --python_out=backend/orchestrator --grpc_python_out=backend/orchestrator backend/proto/ingest.proto
+python -m grpc_tools.protoc -I backend/proto --python_out=backend/ingestion --grpc_python_out=backend/ingestion backend/proto/ingest.proto
 ```
 
 Then restart both services. The generated `*_pb2.py` and `*_pb2_grpc.py` files are not stored in git (`.gitignore` skips them), so a fresh checkout has to generate them with these commands, and CI does the same. A question is one server-streaming `Chat` call (events: `Context`, `Token`, `Done`); history is two simple calls, `ListConversations` and `ListMessages`.

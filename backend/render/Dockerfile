@@ -37,9 +37,10 @@ COPY backend/render/start.sh ./start.sh
 COPY backend/proto /tmp/proto
 # The gRPC code is not stored in Git, so it is generated here.
 # The sed removes Windows line endings, which would stop the script.
-RUN for service in orchestrator retriever; do \
+RUN for pair in orchestrator:chat retriever:chat orchestrator:ingest ingestion:ingest; do \
+        service=${pair%:*}; \
         python -m grpc_tools.protoc -I /tmp/proto \
-            --python_out=$service --grpc_python_out=$service /tmp/proto/chat.proto || exit 1; \
+            --python_out=$service --grpc_python_out=$service /tmp/proto/${pair#*:}.proto || exit 1; \
     done \
     && rm -rf /tmp/proto \
     && sed -i 's/\r$//' start.sh
