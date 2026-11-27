@@ -12,6 +12,12 @@ import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
 import { DocumentPanel } from "../components/DocumentPanel";
 import { Toasts } from "../components/toasts";
+import {
+  CloseIcon,
+  FileIcon,
+  MenuIcon,
+  PaperclipIcon,
+} from "../components/Icons";
 import { STATUS_LABELS, isBusy } from "../components/documentStatus";
 import { ACCEPTED_EXTENSIONS } from "../services/documentLimits";
 
@@ -532,14 +538,14 @@ export function ChatPage({
 
         {attachedDocs.map((item) => (
           <span className="doc-chip" key={item.id} title={item.filename}>
-            <span aria-hidden="true">📄</span>
+            <FileIcon />
             <span className="doc-chip-name">{item.filename}</span>
             <button
               type="button"
               aria-label={"Stop asking about " + item.filename}
               onClick={() => toggleDocument(item.id)}
             >
-              ×
+              <CloseIcon />
             </button>
           </span>
         ))}
@@ -552,7 +558,7 @@ export function ChatPage({
               aria-label="Dismiss"
               onClick={dismissDocumentError}
             >
-              ×
+              <CloseIcon />
             </button>
           </span>
         )}
@@ -583,19 +589,7 @@ export function ChatPage({
         title="Attach a document (PDF, DOCX, TXT, MD)"
         onClick={() => attachInputRef.current?.click()}
       >
-        <svg
-          viewBox="0 0 24 24"
-          width="16"
-          height="16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8" />
-        </svg>
+        <PaperclipIcon />
       </button>
 
       <button
@@ -680,7 +674,7 @@ export function ChatPage({
             aria-label="Open conversations"
             onClick={() => setSidebarOpen(true)}
           >
-            ☰
+            <MenuIcon />
           </button>
 
           <div className="topbar-title">

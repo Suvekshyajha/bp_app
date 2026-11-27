@@ -1,4 +1,5 @@
 import { useRef, type ReactNode } from "react";
+import { ArrowUpIcon, StopIcon } from "./Icons";
 
 export function ChatInput({
   value,
@@ -41,7 +42,7 @@ export function ChatInput({
             submit();
           }
         }}
-        placeholder={sending ? "Type your next message while the answer is written…" : "Write a message…"}
+        placeholder={sending ? "Type your next message while the answer is written…" : "Ask a question, or attach a document…"}
         maxLength={4000}
         rows={1}
         aria-describedby="chat-input-hint"
@@ -53,11 +54,11 @@ export function ChatInput({
         </div>
         {sending && onStop ? (
           <button className="send-button" type="button" onClick={onStop} aria-label="Stop generating">
-            <span>Stop</span><span aria-hidden="true">■</span>
+            <span>Stop</span><StopIcon />
           </button>
         ) : (
           <button className="send-button" type="submit" disabled={sending || !value.trim()} aria-label="Send message">
-            <span>Send</span><span aria-hidden="true">↑</span>
+            <span>Send</span><ArrowUpIcon />
           </button>
         )}
       </div>

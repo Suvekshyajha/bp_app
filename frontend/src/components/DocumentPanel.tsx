@@ -7,6 +7,7 @@ import {
   MAX_SELECTED_DOCUMENTS,
   MAX_UPLOAD_MB,
 } from "../services/documentLimits";
+import { CloseIcon, FileIcon, TrashIcon, UploadIcon } from "./Icons";
 
 export function DocumentPanel({
   documents,
@@ -56,7 +57,7 @@ export function DocumentPanel({
             aria-label="Close documents"
             onClick={onClose}
           >
-            ×
+            <CloseIcon />
           </button>
         )}
       </header>
@@ -83,7 +84,8 @@ export function DocumentPanel({
             disabled={uploading}
             onClick={() => pickerRef.current?.click()}
           >
-            {uploading ? "Uploading…" : "＋ Upload a document"}
+            <UploadIcon />
+            {uploading ? "Uploading…" : "Upload a document"}
           </button>
           <span className="doc-hint">
             {ACCEPTED_EXTENSIONS.join(" ") + " · up to " + MAX_UPLOAD_MB + " MB"}
@@ -139,6 +141,10 @@ export function DocumentPanel({
                     />
                   </label>
 
+                  <span className="doc-file-icon" aria-hidden="true">
+                    <FileIcon />
+                  </span>
+
                   <div className="doc-info">
                     <span className="doc-name" title={document.filename}>
                       {document.filename}
@@ -163,7 +169,7 @@ export function DocumentPanel({
                     disabled={document.status === "deleting"}
                     onClick={() => onRemove(document.id)}
                   >
-                    ×
+                    <TrashIcon />
                   </button>
                 </li>
               );
