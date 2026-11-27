@@ -13,6 +13,7 @@ common.egg-info/dependency_links.txt
 common.egg-info/top_level.txt
 tests/test_crypto.py
 tests/test_embeddings_lazy.py
+tests/test_embeddings_model.py
 tests/test_sanitize.py
 tests/test_sanitize_analysis_tags.py
 tests/test_service_auth.py

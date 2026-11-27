@@ -40,6 +40,20 @@ EOF
     echo "Created deploy/codespaces/.env"
 fi
 
+# The embeddings need a Gemini API key. Asked for once, also when .env is older
+if ! grep -q '^GEMINI_API_KEY=.' .env; then
+    gemini_key="${GEMINI_API_KEY:-}"
+    if [ -z "$gemini_key" ]; then
+        read -r -s -p "Paste your Gemini API key (it stays hidden): " gemini_key
+        echo
+    fi
+    if [ -z "$gemini_key" ]; then
+        echo "A Gemini API key is needed." >&2
+        exit 1
+    fi
+    printf '\nGEMINI_API_KEY=%s\n' "$gemini_key" >> .env
+fi
+
 # Codespaces drops large packets, so downloads time out at the default size
 # (see compose.yml). Reset at every codespace start, so it is set every time.
 if [ -n "${CODESPACE_NAME:-}" ]; then
@@ -50,7 +64,7 @@ fi
 
 docker compose up -d --build
 
-echo "Waiting for the backend (the AI models need a moment to load)..."
+echo "Waiting for the backend (the services need a moment to start)..."
 
 # Asked from inside the network: the retriever opens its port only after the
 # models are loaded, and old log lines cannot answer for a new start

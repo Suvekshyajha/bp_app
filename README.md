@@ -102,8 +102,8 @@ Ingestion service (owns ingest.db: one `documents` table, job state = its status
   ⑤ WRITE (upsert, set_payload, delete) ──► Qdrant
 
 Qdrant
-  chat_messages_v2     retriever reads and writes
-  document_chunks_v2   ingestion writes, retriever reads only
+  chat_messages_v3     retriever reads and writes
+  document_chunks_v3   ingestion writes, retriever reads only
 ```
 
 - **Upload:** Browser ► Orchestrator (checks, user id) ► Ingestion API (`pending`) ► Worker (`processing`) ► Qdrant ► `ready`. The browser lists its documents every 2 seconds while any is `pending` or `processing`, and shows a toast when one finishes or fails.
@@ -140,7 +140,7 @@ New files for this feature: `orchestrator/documents.py` and `ingest_client.py`, 
 
 - Orchestrator ↔ Ingestion: HTTP with a shared service token (`INGEST_SERVICE_TOKEN`) and an `X-User-Id` header. The user id is the session's, never the browser's, and the ingestion service trusts it, so **keep port 8100 on an internal network** (or use TLS).
 
-- Ingestion ↔ Qdrant: writes the document chunks (`document_chunks_v2`). The retriever and the ingestion service never call each other.
+- Ingestion ↔ Qdrant: writes the document chunks (`document_chunks_v3`). The retriever and the ingestion service never call each other.
 
 - A document id that does not exist and one that belongs to another user give the same "not found" answer.
 
@@ -283,11 +283,11 @@ There is no shared stream between users any more, so a slow answer never holds u
 
 Each saved message is turned into two kinds of vectors:
 
-- **Dense** (`ibm-granite/granite-embedding-small-english-r2`, 384 numbers): captures **meaning**.
+- **Dense** (`gemini-embedding-2` over the Google Gemini API, 768 numbers): captures **meaning**. The text is sent to Google readable. On the free tier Google may use it to improve its products and people may review it, so use a paid (billing enabled) key for real personal or sensitive data.
 
 - **Sparse** (`Qdrant/bm25`): captures **keywords**.
 
-A search runs both and merges the two ranked lists with **Reciprocal Rank Fusion (RRF)**. This is called hybrid search. Results are filtered by `user_id` and `conversation_id`, so a user only searches their own messages in that chat. Matches whose dense similarity is below a threshold (default 0.79, set with `RETRIEVAL_MIN_SIMILARITY`) are dropped, so unrelated messages are never handed to the AI.
+A search runs both and merges the two ranked lists with **Reciprocal Rank Fusion (RRF)**. This is called hybrid search. Results are filtered by `user_id` and `conversation_id`, so a user only searches their own messages in that chat. Matches whose dense similarity is below a threshold (default 0.5, set with `RETRIEVAL_MIN_SIMILARITY`) are dropped, so unrelated messages are kept away from the AI. The default has not been tuned for this model yet: compare the `Retrieval:` log lines with real questions and adjust it.
 
 The vectors are always made from the plain text, **before** the text is encrypted for storage.
 
@@ -298,8 +298,8 @@ Document chunks are searched the same hybrid way, but always filtered by the use
 | Situation | What the AI gets |
 |---|---|
 | **Documents ticked, 4 parts or less in total** | All the parts, in reading order. There is nothing to rank, so no relevance check is applied (`RETRIEVAL_SMALL_SELECTION_CHUNKS`). |
-| **Documents ticked, more parts** | The best 6 parts. Only parts that point away from the question (dense similarity below 0.65, `RETRIEVAL_SELECTED_MIN_SIMILARITY`) are dropped. The user chose the scope, so a weak match is still allowed. |
-| **Nothing ticked** | The best parts of **all** the user's ready documents, with the normal 0.79 threshold, so a question no document covers finds nothing. The AI is also given the names of the documents (at most `MAX_AVAILABLE_DOCUMENTS`). |
+| **Documents ticked, more parts** | The best 6 parts. Only parts that point away from the question (dense similarity below 0.2, `RETRIEVAL_SELECTED_MIN_SIMILARITY`) are dropped. The user chose the scope, so a weak match is still allowed. |
+| **Nothing ticked** | The best parts of **all** the user's ready documents, with the normal 0.5 threshold, so a question no document covers finds nothing. The AI is also given the names of the documents (at most `MAX_AVAILABLE_DOCUMENTS`). |
 
 On top of that:
 
@@ -344,13 +344,13 @@ python encrypt_existing.py --qdrant
 
 It encrypts the SQLite rows and the Qdrant payloads, then runs a checkpoint and `VACUUM` so old plain text does not stay in the file. It is safe to run again.
 
-**Upgrading from the earlier embedding model** (`bge-base-en-v1.5`): its vectors cannot be searched with the new model, so the new one uses new collections. Start Qdrant, stop the other services, then run once from `backend/retriever`:
+**Upgrading from an earlier embedding model** (Granite or `bge-base-en-v1.5`): its vectors cannot be searched with the new model, so the new one uses new collections. Start Qdrant, stop the other services, then run once from `backend/retriever`:
 
 ```powershell
 python reembed_collections.py
 ```
 
-It copies `chat_messages` and `document_chunks` into `chat_messages_v2` and `document_chunks_v2` with new vectors. The old collections are only read. Delete them once you are happy with the results, because they still hold the old (encrypted) text. Do not run the script again after using the app, or anything deleted since is copied back. If your `.env` sets `RETRIEVAL_MIN_SIMILARITY`, change it to the new scale (0.79).
+It copies the `_v2` collections (or, if there are none, `chat_messages` and `document_chunks`) into `chat_messages_v3` and `document_chunks_v3` with new vectors. The old collections are only read. Delete them once you are happy with the results, because they still hold the old (encrypted) text. Do not run the script again after using the app, or anything deleted since is copied back. If your `.env` sets `RETRIEVAL_MIN_SIMILARITY`, remove that line so the new default applies.
 
 **Key rules**
 
@@ -390,6 +390,22 @@ For **mutual TLS**, also set `CHAT_TLS_CLIENT_CA` in the retriever, and `CHAT_TL
 
 **Qdrant.** `docker-compose.yml` reads `QDRANT_API_KEY` from a `.env` file next to it (not committed). Use the same value as `QDRANT_API_KEY` in the retriever's and the ingestion service's `.env`. The key is sent with every request, so over plain `http` (fine on localhost) it is readable on the network: use `https` for a real deployment. The Qdrant client warns about this ("Api key is used with an insecure connection").
 
+## Deploying (Vercel + Render)
+
+The frontend runs on Vercel. The whole backend runs as **one** Render web service (`backend/render/Dockerfile`): the orchestrator is public, and the retriever, ingestion API and worker listen only inside the container. The search index is Qdrant Cloud.
+
+1. Create a cluster on Qdrant Cloud and note its `https://...` address and API key.
+2. Push the code to GitHub. In Render choose **New > Blueprint** and pick the repository and branch (`render.yaml`).
+3. Enter `GEMINI_API_KEY`, `GROQ_API_KEY`, `QDRANT_URL` and `QDRANT_API_KEY`. The service tokens are made at every start, and `CHAT_ENCRYPTION_KEYS` is made once by Render: copy it somewhere safe.
+4. If your Vercel address is not the one in `render.yaml`, change `CORS_ORIGINS`.
+5. In Vercel set `VITE_API_BASE_URL=https://<service>.onrender.com` and `VITE_WS_URL=wss://<service>.onrender.com/ws/chat`, then redeploy.
+
+Limits of the free plans:
+
+- Render free has no disk: **accounts, chats and the document list are lost at every restart or sleep**, while their points stay in Qdrant, where nothing can reach them. For lasting data use a paid plan with a disk mounted at `/data` (the disk must be writable by the container's `appuser`).
+- Render free has 512 MB of memory. Whether the four processes fit has not been measured. If Render reports out of memory, use a 2 GB plan.
+- A free Qdrant cluster is suspended when unused for a week.
+
 ## Logging
 
 The orchestrator and the retriever write every line as `time LEVEL [service] [request-id] logger: message`.
@@ -412,12 +428,12 @@ The orchestrator and the retriever write every line as `time LEVEL [service] [re
 | Chat history | SQLite, SQLAlchemy, cursor pagination (in the retriever) |
 | Encryption | `cryptography` (Fernet), application-level, for messages, titles, document text and Qdrant payload text |
 | Service-to-service | gRPC (`grpc.aio`, server streaming for chat), Protocol Buffers; shared service tokens, optional TLS |
-| Embeddings | Sentence Transformers (dense), FastEmbed (sparse) |
+| Embeddings | Google Gemini API (dense), FastEmbed (sparse) |
 | Vector database | Qdrant |
 | AI model | Groq API, `openai/gpt-oss-120b` (streamed) |
 | Tests | pytest (backend), Vitest + Testing Library (frontend), ESLint |
 | CI | GitHub Actions |
-| Containers | Docker (currently only for Qdrant) |
+| Containers | Docker (Qdrant locally; `backend/render/Dockerfile` for deployment) |
 
 ## Folder structure
 
@@ -569,16 +585,18 @@ The settings other than the token have the defaults shown above. The orchestrato
 ```env
 QDRANT_URL=http://localhost:6333
 QDRANT_API_KEY=
+GEMINI_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
 GROQ_MODEL=openai/gpt-oss-120b
 CHAT_ENCRYPTION_KEYS=your_generated_key_here
 CHAT_SERVICE_TOKEN=the_token_you_made_for_the_chat_service
 ```
 
-`QDRANT_URL`, `GROQ_API_KEY`, `CHAT_ENCRYPTION_KEYS` and `CHAT_SERVICE_TOKEN` are required. The service will not start without them.
+`QDRANT_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `CHAT_ENCRYPTION_KEYS` and `CHAT_SERVICE_TOKEN` are required. The service will not start without them.
 
 | Setting | What it does |
 |---|---|
+| `GEMINI_API_KEY` | Required. Used to make the search vectors. The same key goes in the ingestion service. |
 | `GROQ_API_KEY`, `GROQ_MODEL` | Moved here from the orchestrator. The retriever is the only part that calls the AI. |
 | `CHAT_ENCRYPTION_KEYS` | The key that encrypts stored messages and titles. Generate it with the command in [Encryption at rest](#encryption-at-rest). Back it up; never commit it. |
 | `CHAT_SERVICE_TOKEN` | Required, and the same value in the orchestrator. `CHAT_ALLOW_NO_AUTH=true` skips it for local development only. |
@@ -586,8 +604,8 @@ CHAT_SERVICE_TOKEN=the_token_you_made_for_the_chat_service
 | `CHAT_BIND_HOST`, `CHAT_SERVICE_PORT` | Where the gRPC server listens. Default `127.0.0.1` and `50051`. Use `0.0.0.0` only in Docker or on a server, and then also set the token and TLS. |
 | `CHAT_TLS_CERT`, `CHAT_TLS_KEY`, `CHAT_TLS_CLIENT_CA` | Optional TLS. Set `CHAT_TLS_CERT` and `CHAT_TLS_KEY` together; `CHAT_TLS_CLIENT_CA` turns on mutual TLS. |
 | `CHAT_DB_PATH` | Optional. Keeps the retriever's `chat.db` somewhere other than `backend/retriever`. |
-| `RETRIEVAL_MIN_SIMILARITY` | Optional. Minimum similarity (0 to 1) for a related message, or a document part when no document is chosen, to be used. Default 0.79. The scale belongs to the embedding model: unrelated text already scores about 0.74. |
-| `RETRIEVAL_SELECTED_MIN_SIMILARITY` | Optional. The lower floor used when the user ticked documents. Default 0.65. It is never stricter than `RETRIEVAL_MIN_SIMILARITY`. Set it to 0.79 or more to switch the relaxed floor off. |
+| `RETRIEVAL_MIN_SIMILARITY` | Optional. Minimum similarity (0 to 1) for a related message, or a document part when no document is chosen, to be used. Default 0.5, not yet tuned: the scale belongs to the embedding model. |
+| `RETRIEVAL_SELECTED_MIN_SIMILARITY` | Optional. The lower floor used when the user ticked documents. Default 0.2. It is never stricter than `RETRIEVAL_MIN_SIMILARITY`. Set it to 0.5 or more to switch the relaxed floor off. |
 | `RETRIEVAL_SMALL_SELECTION_CHUNKS` | Optional. Ticked documents with this many parts or fewer are given to the AI whole. Default 4. |
 | `PROMPT_BUDGET_CHARS` | Optional. Size limit of the whole prompt. Default 24000. |
 | `DOC_BUDGET_CHARS` | Optional. How much document text goes into one prompt. Default 12000. |
@@ -612,10 +630,11 @@ QDRANT_URL=http://localhost:6333
 QDRANT_API_KEY=
 CHAT_ENCRYPTION_KEYS=exactly_the_same_keys_as_the_retriever
 INGEST_SERVICE_TOKEN=a_long_random_token
+GEMINI_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
 ```
 
-The ingestion service will not start without `INGEST_SERVICE_TOKEN`, and a different `CHAT_ENCRYPTION_KEYS` than the retriever's means document text cannot be read back.
+The ingestion worker will not start without `GEMINI_API_KEY`, the ingestion service will not start without `INGEST_SERVICE_TOKEN`, and a different `CHAT_ENCRYPTION_KEYS` than the retriever's means document text cannot be read back.
 
 | Setting | What it does |
 |---|---|
@@ -625,7 +644,7 @@ The ingestion service will not start without `INGEST_SERVICE_TOKEN`, and a diffe
 | `INGEST_BIND_HOST`, `INGEST_PORT` | Where the ingestion API listens. Default `127.0.0.1` and `8100`. |
 | `GROQ_API_KEY`, `INGEST_ANALYSIS_MODEL`, `INGEST_ANALYSIS_ENABLED` | Stage 1 of chunking: an AI model picks how a document is split. Without a key, or with `INGEST_ANALYSIS_ENABLED=false`, fixed rules choose and the upload still works. |
 | `MAX_UPLOAD_MB`, `MAX_DOCS_PER_USER` | 10 MB and 20 documents. Keep `MAX_UPLOAD_MB` equal in the orchestrator, the ingestion service and (as `VITE_MAX_UPLOAD_MB`) the frontend. |
-| `INGEST_SEMANTIC_MAX_CHARS`, `INGEST_SEMANTIC_PERCENTILE`, `INGEST_JOB_TIMEOUT_SECONDS`, `INGEST_TORCH_THREADS` | Tuning. Defaults 80000, 90, 300 and half the CPU cores. |
+| `INGEST_SEMANTIC_MAX_CHARS`, `INGEST_SEMANTIC_PERCENTILE`, `INGEST_JOB_TIMEOUT_SECONDS` | Tuning. Defaults 80000, 90 and 300. |
 | `INGEST_DB_PATH`, `INGEST_UPLOAD_DIR` | Defaults `./ingest.db` and `./data/uploads`. |
 | `INGEST_ALLOW_NO_AUTH` | Development only, localhost only: start without a token. |
 | `INGEST_SERVICE_URL`, `INGEST_TLS_CA` (orchestrator) | Where and how the orchestrator reaches the ingestion API. |
@@ -668,7 +687,7 @@ From the project root:
 .\run-all.ps1
 ```
 
-This starts Qdrant (Docker) and opens separate windows for the retriever, the ingestion API, the ingestion worker (at low priority), the orchestrator and the frontend. The first retriever start is slow because it downloads the embedding models. Wait for `Chat service running on port 50051` before chatting.
+This starts Qdrant (Docker) and opens separate windows for the retriever, the ingestion API, the ingestion worker (at low priority), the orchestrator and the frontend. The first retriever start downloads the small keyword (BM25) model. Wait for `Chat service running on port 50051` before chatting.
 
 ### Option B: manually
 

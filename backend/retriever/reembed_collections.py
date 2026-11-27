@@ -5,10 +5,10 @@ stopped:
 
     python reembed_collections.py
 
-It reads the old collections, decrypts each text, embeds it again and writes it
-to the new collection under the same id and with the same (still encrypted)
-payload. The old collections are only read, so going back to the old code still
-works.
+It reads the old collections (the "_v2" ones if they exist, otherwise the first
+ones), decrypts each text, embeds it again and writes it to the new collection
+under the same id and with the same (still encrypted) payload. The old
+collections are only read, so going back to the old code still works.
 
 If it stops half way, run it again: points already copied are skipped. Do not
 run it again after the app has been used with the new model, because anything
@@ -40,10 +40,20 @@ def _chunk_text(payload: dict) -> str:
     return f"{decrypt(title)}\n{content}" if title else content
 
 
-# (old collection, new collection, filter indexes, text to embed)
+# (old collections newest first, new collection, filter indexes, text to embed)
 MOVES = (
-    ("chat_messages", MESSAGES_COLLECTION, ("user_id", "conversation_id"), _message_text),
-    ("document_chunks", CHUNKS_COLLECTION, ("user_id", "document_id", "status"), _chunk_text),
+    (
+        ("chat_messages_v2", "chat_messages"),
+        MESSAGES_COLLECTION,
+        ("user_id", "conversation_id"),
+        _message_text,
+    ),
+    (
+        ("document_chunks_v2", "document_chunks"),
+        CHUNKS_COLLECTION,
+        ("user_id", "document_id", "status"),
+        _chunk_text,
+    ),
 )
 
 
@@ -71,8 +81,12 @@ def _create(client: QdrantClient, name: str, indexes: tuple[str, ...]) -> None:
         )
 
 
-def _move(client, source, target, indexes, text_of, embed) -> int:
-    if not client.collection_exists(source):
+def _move(client, sources, target, indexes, text_of, embed) -> int:
+    # Only the newest old collection: an older one can still hold things that
+    # were deleted since
+    source = next((name for name in sources if client.collection_exists(name)), None)
+
+    if source is None:
         return 0
 
     if not client.collection_exists(target):
@@ -136,8 +150,8 @@ def reembed(client: QdrantClient, embed) -> dict[str, int]:
     """
 
     return {
-        target: _move(client, source, target, indexes, text_of, embed)
-        for source, target, indexes, text_of in MOVES
+        target: _move(client, sources, target, indexes, text_of, embed)
+        for sources, target, indexes, text_of in MOVES
     }
 
 

@@ -1,7 +1,7 @@
 """The background worker. Run it as its own process:  python worker.py
 
 It takes one pending job at a time, so only one document uses the embedding
-model at once. Imports are inside main() on purpose: the parser starts child
+API at once. Imports are inside main() on purpose: the parser starts child
 processes with "spawn", and a child re-imports this file, which must stay cheap.
 """
 
@@ -55,15 +55,6 @@ def main() -> None:
             os.nice(10)
         except OSError:
             pass
-
-    threads = os.getenv("INGEST_TORCH_THREADS", "").strip()
-    thread_count = int(threads) if threads.isdigit() and int(threads) > 0 else max(1, (os.cpu_count() or 2) // 2)
-    try:
-        import torch
-
-        torch.set_num_threads(thread_count)
-    except ImportError:
-        pass
 
     limits.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)

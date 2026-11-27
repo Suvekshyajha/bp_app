@@ -1,0 +1,42 @@
+# Render Blueprint: the whole backend as one web service (the frontend is on
+# Vercel). In Render choose New > Blueprint and pick this repository.
+# Render asks for the values marked "sync: false"; none are stored here.
+services:
+  - type: web
+    name: info-mate-backend
+    runtime: docker
+    # The free plan has 512 MB of memory and no disk. If Render reports that
+    # the service ran out of memory, use a plan with 2 GB (1c-2g).
+    plan: free
+    dockerfilePath: ./backend/render/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      # ---- you type these ----
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+
+      # ---- set for you ----
+      # Render makes this key once. COPY IT somewhere safe: without it the
+      # stored chats and documents cannot be read.
+      - key: CHAT_ENCRYPTION_KEYS
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://info-mate-zeta.vercel.app
+      # The website and the API are on different sites
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAMESITE
+        value: none
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      # Splitting by meaning makes one embedding per sentence; keep it to
+      # short documents so uploads stay within the free Gemini limits
+      - key: INGEST_SEMANTIC_MAX_CHARS
+        value: "20000"

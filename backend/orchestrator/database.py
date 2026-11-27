@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -6,7 +7,8 @@ from sqlalchemy.pool import NullPool
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_URL = f"sqlite:///{BASE_DIR / 'chat.db'}"
+DATABASE_PATH = Path(os.getenv("ORCH_DB_PATH", BASE_DIR / "chat.db"))
+DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
 
 engine = create_engine(

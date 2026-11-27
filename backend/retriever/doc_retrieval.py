@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Same meaning as in retrieval.py: the dense cosine similarity a chunk must
 # reach to be returned. Tune it from the "Document retrieval:" log line.
-MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.79"))
+MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.5"))
 
 # The threshold used when the user CHOSE the documents (document_ids is a
 # list). The scope is already known then, so a chunk is not refused only
@@ -33,7 +33,7 @@ MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.79"))
 # only chunks that point away from the question (similarity below this
 # floor) are dropped. The effective value is never higher than
 # MIN_SIMILARITY. Set it to MIN_SIMILARITY (or higher) to switch this off.
-SELECTED_MIN_SIMILARITY = float(os.getenv("RETRIEVAL_SELECTED_MIN_SIMILARITY", "0.65"))
+SELECTED_MIN_SIMILARITY = float(os.getenv("RETRIEVAL_SELECTED_MIN_SIMILARITY", "0.2"))
 
 # Search this many times `limit` candidates, so dropping weak ones still
 # leaves enough good ones.
