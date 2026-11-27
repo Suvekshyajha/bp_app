@@ -400,6 +400,17 @@ The frontend runs on Vercel. The whole backend runs as **one** Render web servic
 4. If your Vercel address is not the one in `render.yaml`, change `CORS_ORIGINS`.
 5. In Vercel set `VITE_API_BASE_URL=https://<service>.onrender.com` and `VITE_WS_URL=wss://<service>.onrender.com/ws/chat`, then redeploy.
 
+### Keeping data in Postgres
+
+Set `DATABASE_URL` to a Postgres address (for example the pooled address of a Neon project) and all three services use it instead of their SQLite files. Accounts, chats and the document list then survive restarts. Without it nothing changes.
+
+1. Install the requirements again, which adds the Postgres driver.
+2. Stop the app, then copy the existing data once, from `backend`: set `$env:DATABASE_URL` and run `.venv\Scripts\python.exe migrate_to_postgres.py`.
+3. On Render set `DATABASE_URL`, and set `CHAT_ENCRYPTION_KEYS` to the key the copied data was written with.
+4. Search vectors are in Qdrant, not in Postgres. Copy the local collections to Qdrant Cloud, or old data is not found by search.
+
+To run locally against Postgres, put the same `DATABASE_URL` in the `.env` of the orchestrator, retriever and ingestion service. A `DATABASE_URL` in the `.env` of the project root is also picked up by the retriever and ingestion service, so keep it out of there unless you mean that.
+
 Limits of the free plans:
 
 - Render free has no disk: **accounts, chats and the document list are lost at every restart or sleep**, while their points stay in Qdrant, where nothing can reach them. For lasting data use a paid plan with a disk mounted at `/data` (the disk must be writable by the container's `appuser`).

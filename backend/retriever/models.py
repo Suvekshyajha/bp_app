@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String
+from sqlalchemy import Column, ForeignKey, Index, String
 from sqlalchemy.orm import relationship
 
+from common.database import UTCDateTime
 from crypto import EncryptedText
 from database import Base
 
@@ -20,7 +21,7 @@ class Conversation(Base):
     # Encrypted at rest (see crypto.py)
     title = Column(EncryptedText, nullable=True)
     created_at = Column(
-        DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(timezone.utc),
     )
 
@@ -56,7 +57,7 @@ class Message(Base):
     # message text). NULL for user messages and for older answers.
     context = Column(EncryptedText, nullable=True)
     created_at = Column(
-        DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(timezone.utc),
     )
 

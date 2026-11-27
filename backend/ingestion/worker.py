@@ -47,6 +47,7 @@ def main() -> None:
     import limits
     import qdrant_docs
     from database import Base, engine, migrate_schema
+    from common.database import create_schema
     import models  # noqa: F401  (registers the tables)
 
     # Be gentle with the machine: the chat service must stay responsive
@@ -57,7 +58,7 @@ def main() -> None:
             pass
 
     limits.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(bind=engine)
+    create_schema(engine, Base.metadata)
     migrate_schema()
     qdrant_docs.ensure_collection()
 

@@ -6,6 +6,7 @@ it. Each test gets its own throw-away SQLite file for users and sessions,
 so tests cannot affect each other or chat.db.
 """
 
+import os
 import sys
 import types
 import uuid
@@ -17,6 +18,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+
+# Never a real database, even when a .env file names one
+os.environ["DATABASE_URL"] = ""
 
 # ---- Fake chat service client (installed before any import) ----
 
@@ -261,7 +265,6 @@ def app(session_factory, engine, monkeypatch):
 
     # The websocket module opens its own sessions; point them at the test DB
     monkeypatch.setattr(websocket, "SessionLocal", session_factory)
-    monkeypatch.setattr(websocket, "engine", engine)
 
     return application
 

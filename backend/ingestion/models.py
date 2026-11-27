@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Column, Index, Integer, String, UniqueConstraint
 
 from common.crypto import EncryptedText
+from common.database import UTCDateTime
 from database import Base
 
 
@@ -44,9 +45,9 @@ class Document(Base):
     analysis = Column(EncryptedText, nullable=True)
     report = Column(EncryptedText, nullable=True)
 
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow)
-    started_at = Column(DateTime, nullable=True)
+    created_at = Column(UTCDateTime, default=_utcnow)
+    updated_at = Column(UTCDateTime, default=_utcnow)
+    started_at = Column(UTCDateTime, nullable=True)
 
     __table_args__ = (
         # The same user uploading the same file again finds this row

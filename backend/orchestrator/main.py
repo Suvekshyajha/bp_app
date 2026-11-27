@@ -11,6 +11,7 @@ import routes
 import websocket
 from auth import ALLOWED_ORIGINS
 from database import Base, engine
+from common.database import create_schema
 from common.log import set_request_id, setup_logging
 import logging
 import time
@@ -20,12 +21,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    # create_all skips tables that already exist, so it would never add a new
-    # index to an old database. Create any missing ones here.
-    for table in Base.metadata.sorted_tables:
-        for index in table.indexes:
-            index.create(bind=engine, checkfirst=True)
+    create_schema(engine, Base.metadata)
 
     yield
     # Close the gRPC channel to the chat service

@@ -154,6 +154,7 @@ def set_session_cookie(response: Response, token: str) -> None:
         samesite=COOKIE_SAMESITE,
         path="/",
     )
+    _partition_cross_site_cookie(response)
 
 
 def clear_session_cookie(response: Response) -> None:
@@ -164,6 +165,27 @@ def clear_session_cookie(response: Response) -> None:
         httponly=True,
         samesite=COOKIE_SAMESITE,
     )
+    # A partitioned cookie is only removed by a partitioned one
+    _partition_cross_site_cookie(response)
+
+
+def _partition_cross_site_cookie(response: Response) -> None:
+    """Add `Partitioned` to the cookie that was just set, when the frontend is
+    on another site (COOKIE_SAMESITE=none).
+
+    Browsers that block third-party cookies (private windows, for example)
+    still accept a partitioned one. It is only sent while the visitor is on
+    the same website that logged in.
+    """
+
+    if COOKIE_SAMESITE != "none":
+        return
+
+    # Added by hand: set_cookie(partitioned=True) needs Python 3.14
+    name, value = response.raw_headers[-1]
+
+    if name == b"set-cookie":
+        response.raw_headers[-1] = (name, value + b"; Partitioned")
 
 
 # ---------- Current user (for REST routes) ----------

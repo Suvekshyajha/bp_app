@@ -13,6 +13,7 @@ import auth
 import limits
 import models  # noqa: F401  (registers the tables)
 from database import Base, engine, migrate_schema
+from common.database import create_schema
 from routes import router
 from common.log import set_request_id, setup_logging
 import time
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
     auth.init_from_env()  # refuses to start without a token (see common/service_auth.py)
 
     limits.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(bind=engine)
+    create_schema(engine, Base.metadata)
     migrate_schema()
 
     yield

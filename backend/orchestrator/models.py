@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Column,
     String,
-    DateTime,
     ForeignKey,
 )
 
+from common.database import UTCDateTime
 from database import Base
 
 
@@ -37,7 +37,7 @@ class UserSession(Base):
         index=True,
     )
     created_at = Column(
-        DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(timezone.utc),
     )
-    expires_at = Column(DateTime, nullable=False)
+    expires_at = Column(UTCDateTime, nullable=False)

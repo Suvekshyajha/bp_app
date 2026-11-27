@@ -11,6 +11,8 @@ import tempfile
 from cryptography.fernet import Fernet
 
 os.environ["CHAT_ENCRYPTION_KEYS"] = Fernet.generate_key().decode()
+# Never a real database: the tests empty their tables
+os.environ["DATABASE_URL"] = ""
 os.environ["CHAT_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test_chat.db")
 os.environ.setdefault("QDRANT_URL", "http://localhost:6333")
 os.environ.setdefault("GROQ_API_KEY", "test-key")

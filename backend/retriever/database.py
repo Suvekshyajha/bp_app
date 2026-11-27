@@ -1,33 +1,22 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from dotenv import load_dotenv
+from sqlalchemy import inspect
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from sqlalchemy.pool import NullPool
 
+from common.database import make_engine
+
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 
 # The chat service owns this file (conversations and messages).
 # Set CHAT_DB_PATH to keep it somewhere else.
 DATABASE_PATH = Path(os.getenv("CHAT_DB_PATH", BASE_DIR / "chat.db"))
-DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
-
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=NullPool,  # no pool: every connection is real, closed for real
-)
-
-
-# Runs on every new connection: WAL lets readers and a writer work together
-@event.listens_for(engine, "connect")
-def set_sqlite_pragmas(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
+# DATABASE_URL set: Postgres. Not set: the SQLite file above.
+engine = make_engine(DATABASE_PATH)
 
 
 SessionLocal = sessionmaker(
@@ -54,12 +43,14 @@ NEW_COLUMNS = [
 def migrate_schema() -> None:
     with engine.begin() as connection:
         for table, column, sql_type in NEW_COLUMNS:
-            existing = {
-                row[1]
-                for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
-            }
+            inspector = inspect(connection)
 
-            if existing and column not in existing:
+            if not inspector.has_table(table):
+                continue
+
+            existing = {item["name"] for item in inspector.get_columns(table)}
+
+            if column not in existing:
                 connection.exec_driver_sql(
                     f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
                 )

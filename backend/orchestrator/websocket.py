@@ -13,7 +13,7 @@ import chat_client
 from chat_client import ChatServiceError
 from rate_limit import chat_limiter
 
-from database import SessionLocal, engine
+from database import SessionLocal
 from models import User
 from auth import (
     ALLOWED_ORIGINS,
@@ -241,10 +241,9 @@ async def chat(websocket: WebSocket):
     # 3. Check the session cookie
     session_token = websocket.cookies.get(SESSION_COOKIE_NAME)
 
-    # One dedicated DB connection for this chat session's login checks.
-    # (Each answer uses its own session, see answer_question.)
-    conn = engine.connect()
-    db: Session = SessionLocal(bind=conn)
+    # The session for this chat's login checks. It takes a database connection
+    # only while a check runs, so open chats do not use up the connections.
+    db: Session = SessionLocal()
 
     # The reader and the answering task both send, so sends take turns
     send_lock = asyncio.Lock()
@@ -275,9 +274,8 @@ async def chat(websocket: WebSocket):
             await websocket.close(code=WS_AUTH_FAILED, reason="User not found")
             return
 
-        # End the read transaction. The connection stays open for the whole
-        # chat session, but no transaction (and no lock) stays open while
-        # we sit waiting for the next message.
+        # End the read transaction, so no connection (and no lock) is held
+        # while we sit waiting for the next message.
         db.rollback()
 
         # 4. Default conversation id (used only if the frontend sends none)
@@ -304,9 +302,8 @@ async def chat(websocket: WebSocket):
                 continue
 
             # Heartbeat from the browser: answer it and wait for the next message.
-            # It checks the session, so an expired login is closed (and its DB
-            # connection freed), but it does NOT extend the session. Only real
-            # chat messages count as activity.
+            # It checks the session, so an expired login is closed, but it does
+            # NOT extend the session. Only real chat messages count as activity.
             if data.get("type") == "ping":
                 if get_session_user_id(db, session_token) != user_id:
                     await websocket.close(
@@ -463,4 +460,3 @@ async def chat(websocket: WebSocket):
             await asyncio.gather(*running, return_exceptions=True)
 
         db.close()
-        conn.close()
