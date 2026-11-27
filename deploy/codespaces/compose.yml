@@ -61,7 +61,7 @@ services:
     environment:
       CHAT_SERVICE_ADDRESS: retriever:50051
       CHAT_SERVICE_TOKEN: ${CHAT_SERVICE_TOKEN}
-      INGEST_SERVICE_URL: http://ingestion:8100
+      INGEST_SERVICE_ADDRESS: ingestion:8100
       INGEST_SERVICE_TOKEN: ${INGEST_SERVICE_TOKEN}
       CORS_ORIGINS: ${FRONTEND_URL}
       # The website and the API are on different sites

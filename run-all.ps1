@@ -8,7 +8,7 @@
 # It starts, in this order (each one waits for the previous one):
 #     1. Qdrant            (Docker, port 6333)
 #     2. Retriever         (gRPC, port 50051)   - new window
-#     3. Ingestion API     (FastAPI, port 8100) - new window
+#     3. Ingestion service (gRPC, port 8100)    - new window
 #     4. Ingestion worker  (no port)            - new window, BelowNormal priority
 #     5. Orchestrator      (FastAPI, port 8000) - new window
 #     6. Frontend          (Vite, port 5173)    - new window
@@ -156,11 +156,11 @@ Start-InWindow "Retriever (gRPC :50051)" $Retriever "& '$RetrieverPython' main.p
 Wait-ForPort 50051 "Retriever" 300
 
 
-# ---------- 3. Ingestion API ----------
-Write-Step "Starting Ingestion API (FastAPI)"
-Start-InWindow "Ingestion API (FastAPI :8100)" $Ingestion "& '$IngestionPython' main.py"
+# ---------- 3. Ingestion service ----------
+Write-Step "Starting Ingestion service (gRPC)"
+Start-InWindow "Ingestion service (gRPC :8100)" $Ingestion "& '$IngestionPython' main.py"
 
-Wait-ForApi "http://localhost:8100/health" 120 "ingestion API"
+Wait-ForPort 8100 "Ingestion service" 120
 
 
 # ---------- 4. Ingestion worker ----------
@@ -200,7 +200,7 @@ Write-Step "Everything is running"
 Write-Host "    App:          http://localhost:5173"
 Write-Host "    API docs:     http://localhost:8000/docs"
 Write-Host "    API health:   http://localhost:8000/api/health"
-Write-Host "    Ingestion:    http://localhost:8100/health"
+Write-Host "    Ingestion:    localhost:8100 (gRPC)"
 Write-Host "    Qdrant:       http://localhost:6333/dashboard"
 Write-Host ""
 Write-Host "    To stop: close the 5 windows, then run: docker compose down"

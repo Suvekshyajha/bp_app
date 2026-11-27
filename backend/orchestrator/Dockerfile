@@ -21,7 +21,8 @@ COPY backend/orchestrator ./
 COPY backend/proto /tmp/proto
 # The gRPC code is not stored in Git, so it is generated here
 RUN python -m grpc_tools.protoc -I /tmp/proto \
-        --python_out=. --grpc_python_out=. /tmp/proto/chat.proto \
+        --python_out=. --grpc_python_out=. \
+        /tmp/proto/chat.proto /tmp/proto/ingest.proto \
     && rm -rf /tmp/proto
 
 # Do not run as root. /app must stay writable: chat.db is created in it.

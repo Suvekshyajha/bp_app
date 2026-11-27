@@ -122,19 +122,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      # chat_pb2.py and chat_pb2_grpc.py are generated from backend/proto/chat.proto
-      # and are not stored in Git. Only the orchestrator and retriever use gRPC;
-      # ingestion is plain HTTP, so it skips this step.
+      # The gRPC files are generated from backend/proto and are not stored in
+      # Git. chat.proto: orchestrator and retriever. ingest.proto:
+      # orchestrator and ingestion.
       # This step runs from the repository root, not from the service folder.
       - name: Generate gRPC code
-        if: matrix.service != 'ingestion'
         working-directory: ${{ github.workspace }}
-        run: >
-          python -m grpc_tools.protoc
-          -I backend/proto
-          --python_out=backend/${{ matrix.service }}
-          --grpc_python_out=backend/${{ matrix.service }}
-          backend/proto/chat.proto
+        run: |
+          case "${{ matrix.service }}" in
+            orchestrator) protos="chat ingest" ;;
+            retriever)    protos="chat" ;;
+            ingestion)    protos="ingest" ;;
+          esac
+          for name in $protos; do
+            python -m grpc_tools.protoc -I backend/proto \
+              --python_out=backend/${{ matrix.service }} \
+              --grpc_python_out=backend/${{ matrix.service }} \
+              backend/proto/$name.proto
+          done
 
       # Dummy values only; no real key is needed or used. The ingestion tests
       # set their own test token and temp database in tests/conftest.py.

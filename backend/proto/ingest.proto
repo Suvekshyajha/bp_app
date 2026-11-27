@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package ingest.v1;
+
+// The documents of one user, served by the ingestion service to the
+// orchestrator. Every call carries two metadata entries:
+//   authorization: Bearer <INGEST_SERVICE_TOKEN>
+//   x-user-id:     the user the call is made for (from the login session)
+//
+// Status codes:
+//   UNAUTHENTICATED      wrong or missing service token
+//   PERMISSION_DENIED    missing or invalid x-user-id
+//   NOT_FOUND            no such document (also: someone else's document)
+//   INVALID_ARGUMENT     file type not accepted, empty, or not what it claims
+//   OUT_OF_RANGE         file or text too large
+//   FAILED_PRECONDITION  the user already keeps the most documents allowed
+//   UNAVAILABLE          the search index cannot be reached
+service DocumentService {
+    // The first message holds the file name, every later one a piece of the file
+    rpc Upload (stream UploadRequest) returns (UploadResponse);
+    rpc ListDocuments (ListDocumentsRequest) returns (ListDocumentsResponse);
+    rpc GetDocument (GetDocumentRequest) returns (Document);
+    rpc DeleteDocument (DeleteDocumentRequest) returns (DeleteDocumentResponse);
+}
+
+message UploadInfo {
+    string filename = 1;
+}
+
+message UploadRequest {
+    oneof part {
+        UploadInfo info = 1;
+        bytes chunk = 2;
+    }
+}
+
+message UploadResponse {
+    Document document = 1;
+
+    // true = work was queued (a new document, or a failed one queued again)
+    bool queued = 2;
+
+    // true = the document existed already and `document` has every field.
+    // Otherwise only id, filename and status are set.
+    bool existing = 3;
+}
+
+message ChunkingSummary {
+    optional string strategy_used = 1;
+    string fallback_reason = 2;
+    optional int32 chunk_count = 3;
+}
+
+message Document {
+    string id = 1;
+    string filename = 2;
+    string status = 3;          // pending, processing, ready, failed, deleting
+    optional string stage = 4;
+    optional string error = 5;  // a short safe code
+    int32 chunk_count = 6;
+    optional string created_at = 7;  // ISO 8601, UTC
+    optional ChunkingSummary chunking = 8;
+}
+
+message ListDocumentsRequest {}
+
+message ListDocumentsResponse {
+    repeated Document documents = 1;
+}
+
+message GetDocumentRequest {
+    string document_id = 1;
+}
+
+message DeleteDocumentRequest {
+    string document_id = 1;
+}
+
+message DeleteDocumentResponse {}

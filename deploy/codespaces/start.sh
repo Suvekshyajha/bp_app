@@ -70,9 +70,9 @@ echo "Waiting for the backend (the services need a moment to start)..."
 # models are loaded, and old log lines cannot answer for a new start
 services_answer() {
     docker compose exec -T orchestrator python -c "
-import socket, urllib.request
+import socket
 socket.create_connection(('retriever', 50051), 2).close()
-urllib.request.urlopen('http://ingestion:8100/health', timeout=2)
+socket.create_connection(('ingestion', 8100), 2).close()
 " >/dev/null 2>&1
 }
 

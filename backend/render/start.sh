@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the whole backend in one container: the retriever, the ingestion API,
+# Runs the whole backend in one container: the retriever, the ingestion service,
 # the ingestion worker and the orchestrator. Only the orchestrator is public.
 # If any of them ends, the others are stopped and the container exits, so the
 # host starts it again.
@@ -16,7 +16,7 @@ export CHAT_SERVICE_PORT=50051
 export CHAT_SERVICE_ADDRESS=127.0.0.1:50051
 export INGEST_BIND_HOST=127.0.0.1
 export INGEST_PORT=8100
-export INGEST_SERVICE_URL=http://127.0.0.1:8100
+export INGEST_SERVICE_ADDRESS=127.0.0.1:8100
 
 pids=()
 

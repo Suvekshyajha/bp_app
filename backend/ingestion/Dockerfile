@@ -1,4 +1,4 @@
-# Ingestion: the document API and the background worker, in one container.
+# Ingestion: the document service (gRPC) and the background worker, in one container.
 # Build from the repository root:
 #   docker build -f backend/ingestion/Dockerfile -t infomate-ingestion .
 FROM python:3.12-slim
@@ -23,6 +23,11 @@ RUN pip install /tmp/shared_common && rm -rf /tmp/shared_common
 RUN python -c "from common.embeddings import get_sparse; get_sparse()"
 
 COPY backend/ingestion ./
+COPY backend/proto /tmp/proto
+# The gRPC code is not stored in Git, so it is generated here
+RUN python -m grpc_tools.protoc -I /tmp/proto \
+        --python_out=. --grpc_python_out=. /tmp/proto/ingest.proto \
+    && rm -rf /tmp/proto
 # Windows line endings would stop the script from running
 RUN sed -i 's/\r$//' start.sh
 

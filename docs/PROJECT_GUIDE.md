@@ -44,7 +44,7 @@ A chat app with a memory:
 graph TD
     B[Browser: React app] -- "HTTPS REST + WebSocket, session cookie" --> O[Orchestrator<br/>FastAPI :8000]
     O -- "gRPC + service token" --> R[Retriever<br/>gRPC :50051]
-    O -- "HTTP + service token + X-User-Id" --> I[Ingestion API<br/>FastAPI :8100]
+    O -- "gRPC + service token + x-user-id" --> I[Ingestion service<br/>gRPC :8100]
     I -- "ingest.db + upload folder" --- W[Ingestion worker]
     R --> Q[(Qdrant :6333)]
     I --> Q
@@ -64,7 +64,7 @@ graph TD
 | Ingestion API | `backend/ingestion/main.py` | Accepts, lists and deletes documents | Qdrant (delete) |
 | Ingestion worker | `backend/ingestion/worker.py` | Reads, cuts, embeds and stores documents | Qdrant, Groq |
 | Shared code | `backend/shared_common/` | Encryption, embeddings, cleaning, logging, token checks | A library, not a service |
-| gRPC contract | `backend/proto/chat.proto` | Messages between orchestrator and retriever | Generated into `*_pb2*.py` |
+| gRPC contracts | `backend/proto/chat.proto`, `ingest.proto` | Messages between orchestrator and retriever, and orchestrator and ingestion | Generated into `*_pb2*.py` |
 | Qdrant | `docker-compose.yml` | Search index | — |
 
 ### 2.2 Why it is split this way
@@ -163,7 +163,7 @@ graph LR
 
 1. **Browser** (`checkFile`): allowed extension, not empty, within size limit.
 2. **Orchestrator** (`documents.upload_document`): 5 uploads per 60 s → declared size → one file only → extension → real size while copying → not empty. The user id comes from the session, never the form.
-3. **Ingestion API** (`routes.upload`): token → clean file name → extension → size and SHA-256 while copying → file content matches its type → same user and file already there? (returns it) → at most 20 documents per user → move file into place → create the row (202).
+3. **Ingestion API** (`service.DocumentService.Upload`): token → clean file name → extension → size and SHA-256 while copying → file content matches its type → same user and file already there? (returns it) → at most 20 documents per user → move file into place → create the row (202).
 4. **Worker** (`jobs.process_document`):
 
 | Stage | What happens |
@@ -366,8 +366,8 @@ Events (`Context`, `Token`, `Done`) are sent through LangGraph's custom stream, 
 | `chat_client.py` | `chat`, `list_conversations`, `list_messages`, `delete_conversation`, `close` | gRPC client (120 s chat, 10 s history) |
 | | `_make_channel`, `_metadata`, `_stubs` | TLS or plain channel, token and request id |
 | | `_result_for_frontend`, `_role_name`, `_iso` | Converts messages |
-| `ingest_client.py` | `upload`, `list_documents`, `get_document`, `delete_document`, `close` | HTTP client (30 s upload, 10 s others) |
-| | `_make_client`, `_send`, `_json`, `_detail_of` | Token, `X-User-Id`, error handling |
+| `ingest_client.py` | `upload`, `list_documents`, `get_document`, `delete_document`, `close` | gRPC client (30 s upload, 10 s others) |
+| | `_make_channel`, `_call`, `_to_error`, `_document` | Token, `x-user-id`, error handling |
 | `rate_limit.py` | `SlidingWindowRateLimiter.allow` / `_sweep` | Sliding window per user, in memory |
 | `models.py` | `User`, `UserSession` | Tables |
 | `database.py` | `get_db`, pragmas | SQLite in WAL mode |
@@ -412,8 +412,8 @@ Events (`Context`, `Token`, `Done`) are sent through LangGraph's custom stream, 
 | File | Function | Does |
 |---|---|---|
 | `main.py` | `lifespan`, `trace_requests`, `health` | Starts only with a token; API docs disabled |
-| `auth.py` | `init_from_env`, `require_user`, `_check_token` | Token first, then `X-User-Id` |
-| `routes.py` | `upload`, `list_documents`, `get_document`, `delete_document`, `_public`, `_clean_filename`, `_chunking_summary`, `_remove` | HTTP API |
+| `auth.py` | `init_from_env`, `require_user`, `_check_token` | Token first, then `x-user-id` |
+| `service.py` | `DocumentService` (`Upload`, `ListDocuments`, `GetDocument`, `DeleteDocument`), `_public`, `_clean_filename`, `_chunking_summary`, `_call` | gRPC service |
 | `limits.py` | constants, `_int_env` | Every limit and status name |
 | `worker.py` | `main`, `run_once`, `recover_stale` | Polls every second, one job at a time |
 | `jobs.py` | `process_document` | One job, start to finish; never raises |
@@ -476,7 +476,7 @@ Checks (`validate.find_problem`): no chunks, empty chunk, over 480 tokens, too m
 | `orchestrator/auth.py` | `_now`, `_hash_token` | Current UTC time; SHA-256 of the session token |
 | `orchestrator/routes.py` | `SignupRequest`, `LoginRequest` | Input validation rules |
 | `orchestrator/chat_client.py` | `ChatServiceError` | A gRPC failure with its status code |
-| `orchestrator/ingest_client.py` | `IngestError`, `_get_client` | An ingestion failure with its status; creates the HTTP client once |
+| `orchestrator/ingest_client.py` | `IngestError`, `_get_stub` | An ingestion failure with its status; creates the gRPC channel once |
 | `retriever/repository.py` | `ConversationNotFound`, `InvalidCursor` | Missing or foreign chat; bad page token |
 | `retriever/turn.py` | `TurnState` | The graph state ([4.3](#43-the-state)) |
 | `shared_common/common/crypto.py` | `EncryptionConfigError` | Missing or wrong key |
@@ -571,9 +571,9 @@ React 19, TypeScript, Vite.
 
 Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `ABORTED`, `FAILED_PRECONDITION`, `RESOURCE_EXHAUSTED`, `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `UNAUTHENTICATED`, `INTERNAL`.
 
-### 7.4 Ingestion HTTP (internal)
+### 7.4 Ingestion gRPC (`ingest.proto`, internal)
 
-`POST /documents`, `GET /documents`, `GET /documents/{id}`, `DELETE /documents/{id}`, `GET /health`. All except health need `Authorization: Bearer` and `X-User-Id`.
+`DocumentService`: `Upload` (client stream: file name, then the file in pieces), `ListDocuments`, `GetDocument`, `DeleteDocument`. Every call needs `authorization: Bearer` and `x-user-id` in its metadata.
 
 ---
 
@@ -703,7 +703,7 @@ Each service reads its own `.env`. Copy from `.env.example`. Never commit real v
 | `CHAT_SERVICE_ADDRESS` | `localhost:50051` | Retriever |
 | `CHAT_SERVICE_TOKEN` | none | Must match retriever |
 | `CHAT_TLS_CA`, `CHAT_TLS_CLIENT_CERT`, `CHAT_TLS_CLIENT_KEY` | empty | TLS files |
-| `INGEST_SERVICE_URL` | `http://localhost:8100` | Ingestion |
+| `INGEST_SERVICE_ADDRESS` | `localhost:8100` | Ingestion |
 | `INGEST_SERVICE_TOKEN` | required | Must match ingestion |
 | `INGEST_TLS_CA` | empty | TLS |
 | `CORS_ORIGINS` | local Vite addresses | Allowed websites |
@@ -771,7 +771,7 @@ Starts Qdrant (Docker), retriever, ingestion API, worker, orchestrator and front
 |---|---|
 | Frontend | `cd frontend; npm test` (also `npm run lint`, `npm run build`) |
 | Each Python service | `python -m pytest` inside its folder |
-| gRPC code (once) | `python -m grpc_tools.protoc -I backend/proto --python_out=backend/<service> --grpc_python_out=backend/<service> backend/proto/chat.proto` |
+| gRPC code (once) | `python -m grpc_tools.protoc -I backend/proto --python_out=backend/<service> --grpc_python_out=backend/<service> backend/proto/<chat or ingest>.proto` |
 
 `.github/workflows/ci.yml` runs the frontend, shared library and the three services on pull requests and on pushes to `dev`, `main` and `langraph-implement`.
 
