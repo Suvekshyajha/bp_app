@@ -16,6 +16,7 @@ import chat_pb2_grpc
 import repository
 from crypto import check_configured
 from database import Base, engine, migrate_schema
+from common.database import create_schema
 from embeddings import warm_up
 from qdrant_store import create_collection, delete_conversation_points
 from repository import ConversationNotFound, InvalidCursor
@@ -497,9 +498,9 @@ async def serve():
     # Stop right away if the encryption key is missing, not on the first message
     check_configured()
 
-    # Create the SQLite tables and the Qdrant collection if they are missing,
+    # Create the database tables and the Qdrant collection if they are missing,
     # and add columns that older databases do not have yet
-    Base.metadata.create_all(bind=engine)
+    create_schema(engine, Base.metadata)
     migrate_schema()
     await asyncio.to_thread(create_collection)
 

@@ -13,6 +13,8 @@ from cryptography.fernet import Fernet
 _TEMP_DIR = tempfile.mkdtemp()
 
 os.environ["CHAT_ENCRYPTION_KEYS"] = Fernet.generate_key().decode()
+# Never a real database: the tests empty their tables
+os.environ["DATABASE_URL"] = ""
 os.environ["INGEST_DB_PATH"] = os.path.join(_TEMP_DIR, "test_ingest.db")
 os.environ["INGEST_UPLOAD_DIR"] = os.path.join(_TEMP_DIR, "uploads")
 os.environ["INGEST_SERVICE_TOKEN"] = "test-token"
