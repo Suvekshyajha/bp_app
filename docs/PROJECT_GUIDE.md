@@ -71,14 +71,14 @@ graph TD
 
 - The browser can reach only the orchestrator. The other services trust the user id they are given, so they must stay private.
 - Each service owns its own SQLite file. No service reads another's database.
-- Heavy ML work (embedding) lives in the retriever and the worker. The orchestrator and the ingestion API stay light.
+- Embedding work (Gemini API calls and the keyword model) lives in the retriever and the worker. The orchestrator and the ingestion API stay light.
 - A slow document upload cannot block chat: the worker is a separate, low priority process.
 
 ### 2.3 AI models
 
 | Use | Model |
 |---|---|
-| Meaning (dense) vectors, 384 numbers | `ibm-granite/granite-embedding-small-english-r2` |
+| Meaning (dense) vectors, 768 numbers | `gemini-embedding-2` (Google Gemini API) |
 | Keyword (sparse) vectors | `Qdrant/bm25` |
 | Writing answers and rewriting questions | Groq, `openai/gpt-oss-120b` (`GROQ_MODEL`) |
 | Choosing how to cut a document | `INGEST_ANALYSIS_MODEL`, same default |
@@ -333,10 +333,10 @@ Events (`Context`, `Token`, `Done`) are sent through LangGraph's custom stream, 
 | | `encrypt`, `decrypt`, `rekey`, `is_encrypted` | Fernet with the `enc:v1:` prefix; first key encrypts, all decrypt |
 | | `EncryptedText` | A database column that encrypts and decrypts by itself |
 | | `python crypto.py genkey` | Prints a new key |
-| `embeddings.py` | `get_dense`, `get_sparse`, `warm_up` | Load models on first use |
-| | `embed_messages` (`embed_passages`) | Vectors for stored text |
-| | `embed_query` | Vectors for a search, with the query instruction prefix |
-| | `count_tokens` | Token count of the dense model |
+| `embeddings.py` | `get_dense`, `get_sparse`, `warm_up` | Gemini client and keyword model, made on first use; `warm_up` also checks the API key |
+| | `embed_messages`, `embed_passages` | Vectors for stored text; passages wait longer for a rate limit |
+| | `embed_query` | Vectors for a search, with the query task prefix and a short retry |
+| | `count_tokens` | Local token estimate (about 4 characters per token) |
 | `sanitize.py` | `strip_hidden_characters` | Removes invisible and control characters (keeps joiners used by Nepali, Hindi and emoji) |
 | | `clean_for_prompt` | Also removes the app's own prompt tags, repeating until stable |
 | | `find_injection`, `looks_like_injection` | Detects injection wording |
@@ -466,7 +466,7 @@ Events (`Context`, `Token`, `Done`) are sent through LangGraph's custom stream, 
 
 Support: `TextView.spans_for`, `make_chunks`, `Meter`, `sentence_ranges`, `leaf_ranges`, `pack`, `absorb_small_tail`, `sentence_units`, `section_title`.
 Checks (`validate.find_problem`): no chunks, empty chunk, over 480 tokens, too many tiny chunks, under 99% coverage, over 2000 chunks.
-`tokens.count_tokens` uses the real tokenizer.
+`tokens.count_tokens` uses a local estimate.
 
 ### 5.5 Small helpers and error classes
 
@@ -584,8 +584,8 @@ Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `ABORTED`, `FAILED_PRECONDITION`, `RESO
 | Orchestrator `chat.db` | `users`, `sessions` | Password hashed, session token hashed | Name, email |
 | Retriever `chat.db` | `conversations`, `messages` | Title, content, saved sources | Ids, role, times |
 | `ingest.db` | `documents` | File name, analysis, report | Ids, file hash, type, status |
-| Qdrant `chat_messages_v2` | One point per message | `content` | Vectors, user id, chat id, role, time |
-| Qdrant `document_chunks_v2` | One point per chunk | File name, section title, content | Vectors, user id, document id, page, status |
+| Qdrant `chat_messages_v3` | One point per message | `content` | Vectors, user id, chat id, role, time |
+| Qdrant `document_chunks_v3` | One point per chunk | File name, section title, content | Vectors, user id, document id, page, status |
 | Upload folder | File while its job runs | — | The file itself |
 | Browser `localStorage` | Name, email, user id, selected and hidden chats | — | All of it |
 
@@ -653,7 +653,7 @@ Images are never loaded, links are shown as text with their address, raw HTML is
 
 - Question, answer and document text are not written by the node logs, and job errors log only the error type.
 - Exceptions are listed in section 10.
-- Text leaves your servers: questions, history, excerpts, document samples go to Groq.
+- Text leaves your servers: questions, history, excerpts, document samples go to Groq. Messages, questions and all document text also go to Google (Gemini embeddings); on the free tier Google may use them and people may review them.
 
 ---
 
@@ -717,6 +717,7 @@ Each service reads its own `.env`. Copy from `.env.example`. Never commit real v
 
 | Name | Default |
 |---|---|
+| `GEMINI_API_KEY` (required) | — |
 | `GROQ_API_KEY` (required), `GROQ_MODEL` | —, `openai/gpt-oss-120b` |
 | `QDRANT_URL` (required), `QDRANT_API_KEY` | — |
 | `CHAT_ENCRYPTION_KEYS` (required) | — |
@@ -724,8 +725,8 @@ Each service reads its own `.env`. Copy from `.env.example`. Never commit real v
 | `CHAT_BIND_HOST`, `CHAT_SERVICE_PORT` | `127.0.0.1`, 50051 |
 | `CHAT_TLS_CERT`, `CHAT_TLS_KEY`, `CHAT_TLS_CLIENT_CA` | empty |
 | `CHAT_DB_PATH` | `./chat.db` |
-| `RETRIEVAL_MIN_SIMILARITY` | 0.79 |
-| `RETRIEVAL_SELECTED_MIN_SIMILARITY`, `RETRIEVAL_SMALL_SELECTION_CHUNKS` | 0.65, 4 |
+| `RETRIEVAL_MIN_SIMILARITY` | 0.5 (not yet tuned) |
+| `RETRIEVAL_SELECTED_MIN_SIMILARITY`, `RETRIEVAL_SMALL_SELECTION_CHUNKS` | 0.2, 4 |
 | `PROMPT_BUDGET_CHARS`, `DOC_BUDGET_CHARS`, `MAX_AVAILABLE_DOCUMENTS` | 24000, 12000, 50 |
 | `MAX_QUERY_CHARS` | 4000 |
 | `REWRITE_MODEL`, `REWRITE_TIMEOUT_SECONDS` | same as `GROQ_MODEL`, 5 |
@@ -739,10 +740,11 @@ Each service reads its own `.env`. Copy from `.env.example`. Never commit real v
 | `QDRANT_URL`, `QDRANT_API_KEY`, `CHAT_ENCRYPTION_KEYS` | same as retriever |
 | `INGEST_SERVICE_TOKEN`, `INGEST_ALLOW_NO_AUTH` | required unless the dev flag |
 | `INGEST_BIND_HOST`, `INGEST_PORT` | `127.0.0.1`, 8100 |
+| `GEMINI_API_KEY` (required) | — |
 | `GROQ_API_KEY`, `INGEST_ANALYSIS_MODEL`, `INGEST_ANALYSIS_ENABLED` | —, gpt-oss, true |
 | `MAX_UPLOAD_MB`, `MAX_DOCS_PER_USER` | 10, 20 |
 | `INGEST_SEMANTIC_MAX_CHARS`, `INGEST_SEMANTIC_PERCENTILE` | 80000, 90 |
-| `INGEST_JOB_TIMEOUT_SECONDS`, `INGEST_TORCH_THREADS` | 300, half the cores |
+| `INGEST_JOB_TIMEOUT_SECONDS` | 300 |
 | `INGEST_DB_PATH`, `INGEST_UPLOAD_DIR` | `./ingest.db`, `./data/uploads` |
 
 ### Frontend
@@ -783,14 +785,13 @@ docker build -f backend/retriever/Dockerfile -t infomate-retriever .
 docker build -f backend/ingestion/Dockerfile -t infomate-ingestion .
 ```
 
-The ML images include the models and use CPU-only `torch`. `.dockerignore` keeps secrets and local data out. Compose in this repository starts only Qdrant.
+The retriever and ingestion images include only the keyword (BM25) model. `.dockerignore` keeps secrets and local data out. `docker-compose.yml` starts only Qdrant.
 
-### Current demo deployment
+### Deployment (Vercel + Render)
 
-- Frontend on Vercel (`frontend/vercel.json` makes page refresh work).
-- Backend on a laptop, reached through a Cloudflare quick tunnel to port 8000.
-- The tunnel address changes at each restart: update `VITE_API_BASE_URL` and `VITE_WS_URL`, then redeploy.
-- Orchestrator needs the Vercel address in `CORS_ORIGINS`, `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`.
+- Frontend on Vercel (`frontend/vercel.json` makes page refresh work). Set `VITE_API_BASE_URL` and `VITE_WS_URL` to the Render address, then redeploy.
+- Backend as one Render web service: `render.yaml` and `backend/render/` (four processes, only the orchestrator public). Qdrant is Qdrant Cloud.
+- Steps and the limits of the free plans: README, "Deploying (Vercel + Render)".
 
 ---
 

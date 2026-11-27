@@ -1,10 +1,6 @@
-# CPU-only torch: the default Linux build also downloads several GB of GPU libraries.
---extra-index-url https://download.pytorch.org/whl/cpu
 # Same pins as the retriever (plan section 4).
 qdrant-client==1.20.0
 fastembed==0.9.1
-sentence-transformers==6.3.0
-torch==2.15.0
 cryptography==50.0.2
 SQLAlchemy==2.1.9
 fastapi==0.163.2

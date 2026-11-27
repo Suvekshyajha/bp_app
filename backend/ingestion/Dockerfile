@@ -19,8 +19,8 @@ RUN pip install -r requirements.txt
 COPY backend/shared_common /tmp/shared_common
 RUN pip install /tmp/shared_common && rm -rf /tmp/shared_common
 
-# Download the embedding models now, so a start does not have to
-RUN python -c "from common.embeddings import warm_up; warm_up()"
+# Download the keyword (BM25) model now, so a start does not have to
+RUN python -c "from common.embeddings import get_sparse; get_sparse()"
 
 COPY backend/ingestion ./
 # Windows line endings would stop the script from running

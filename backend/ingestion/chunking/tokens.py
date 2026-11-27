@@ -1,8 +1,7 @@
 """One token counter for all of ingestion.
 
-Production counts with the dense model's tokenizer (common.embeddings.count_tokens).
-That import loads a model, so it happens on first use and never at import,
-and tests replace the counter with a cheap one through `set_counter()`.
+Production uses the local estimate in common.embeddings.count_tokens (no model
+and no API call). Tests replace the counter through `set_counter()`.
 """
 
 from typing import Callable
@@ -11,7 +10,7 @@ _counter: Callable[[str], int] | None = None
 
 
 def set_counter(counter: Callable[[str], int] | None) -> None:
-    """Use `counter` instead of the real tokenizer. None restores the real one."""
+    """Use `counter` instead of the estimate. None restores the estimate."""
 
     global _counter
     _counter = counter

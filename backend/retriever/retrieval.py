@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 # and is tiny for every result. The dense cosine similarity has a stable
 # scale. Tune the value from the "Retrieval:" log line below.
 #
-# The scale belongs to the model. With Granite, unrelated text scores about 0.74
-# and related text about 0.79 to 0.95, so the floor is high.
-MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.79"))
+# The scale belongs to the model. This default has NOT been tuned for
+# gemini-embedding-2: check the log line on real questions and adjust it.
+MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.5"))
 
 # Search this many times `limit` candidates, so that dropping weak ones
 # still leaves enough good ones to fill `limit`.
