@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import type { Identity } from "../types";
 import { setIdentity } from "../services/identity";
 import { API_BASE_URL } from "../config";
+import { ArrowRightIcon, EyeIcon, EyeOffIcon } from "../components/Icons";
 
 export function LoginPage({
   onAuthenticated,
@@ -12,6 +13,7 @@ export function LoginPage({
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -81,27 +83,33 @@ export function LoginPage({
   return (
     <main className="login-page">
       <section className="login-card" aria-labelledby="login-title">
-        <div className="brand-mark brand-mark--large" aria-hidden="true">
-          I
+        <div className="login-brand">
+          <div className="brand-mark brand-mark--large" aria-hidden="true">
+            I
+          </div>
+          <span className="brand-name">
+            Info<strong>Mate</strong>
+          </span>
         </div>
 
-        <p className="eyebrow">INFOMATE</p>
+        {/* The key replays the short fade when switching log in / sign up */}
+        <div className="login-intro" key={isSignup ? "signup" : "login"}>
+          <h1 id="login-title">
+            {isSignup
+              ? "Create your account."
+              : "Welcome back to your thinking space."}
+          </h1>
 
-        <h1 id="login-title">
-          {isSignup
-            ? "Create your account."
-            : "Welcome back to your thinking space."}
-        </h1>
-
-        <p className="login-description">
-          {isSignup
-            ? "Create an account to start chatting and save your conversation history."
-            : "Log in to continue your conversations."}
-        </p>
+          <p className="login-description">
+            {isSignup
+              ? "Create an account to start chatting and save your conversation history."
+              : "Log in to continue your conversations."}
+          </p>
+        </div>
 
         <form onSubmit={handleSubmit} className="login-form">
           {isSignup && (
-            <>
+            <div className="form-field form-field--enter">
               <label htmlFor="display-name">Your name</label>
               <input
                 id="display-name"
@@ -113,32 +121,53 @@ export function LoginPage({
                 placeholder="Your name"
                 required
               />
-            </>
+            </div>
           )}
 
-          <label htmlFor="email">Email address</label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="email"
-            maxLength={254}
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-            required
-          />
+          <div className="form-field">
+            <label htmlFor="email">Email address</label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="email"
+              maxLength={254}
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@example.com"
+              required
+            />
+          </div>
 
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            type="password"
-            autoComplete={isSignup ? "new-password" : "current-password"}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="Enter your password"
-            minLength={8}
-            required
-          />
+          <div className="form-field">
+            <label htmlFor="password">Password</label>
+            <div className="password-field">
+              <input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete={isSignup ? "new-password" : "current-password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Enter your password"
+                minLength={8}
+                aria-describedby={isSignup ? "password-hint" : undefined}
+                required
+              />
+              <button
+                type="button"
+                className="password-toggle"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                title={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((shown) => !shown)}
+              >
+                {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            </div>
+            {isSignup && (
+              <p className="field-hint" id="password-hint">
+                Use at least 8 characters.
+              </p>
+            )}
+          </div>
 
           {error && (
             <p className="error-message" role="alert">
@@ -149,6 +178,7 @@ export function LoginPage({
           <button
             type="submit"
             className="primary-button"
+            aria-busy={loading}
             disabled={
               loading ||
               !email.trim() ||
@@ -160,8 +190,12 @@ export function LoginPage({
               ? "Please wait..."
               : isSignup
                 ? "Create account"
-                : "Log in"}{" "}
-            <span aria-hidden="true">→</span>
+                : "Log in"}
+            {loading ? (
+              <span className="button-spinner" aria-hidden="true" />
+            ) : (
+              <ArrowRightIcon />
+            )}
           </button>
         </form>
 
@@ -171,6 +205,7 @@ export function LoginPage({
             type="button"
             onClick={() => {
               setIsSignup(!isSignup);
+              setShowPassword(false);
               setError("");
             }}
           >

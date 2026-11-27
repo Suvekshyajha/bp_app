@@ -63,7 +63,10 @@ export default function App() {
   if (checking) {
     return (
       <main className="login-page">
-        <p>Loading…</p>
+        <p className="app-loading">
+          <span className="app-loading-spinner" aria-hidden="true" />
+          Loading…
+        </p>
       </main>
     );
   }

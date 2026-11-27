@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { createPortal } from "react-dom";
 import type { RetrievedPayload } from "../types";
 import { findSupportingText, keyWords } from "./citations";
+import { CloseIcon, FileIcon } from "./Icons";
 
 const GAP = 6; // between the marker and the popover
 const EDGE = 8; // smallest distance to the window edge
@@ -117,6 +118,9 @@ export function Citation({
         createPortal(
           <div className="citation-popover" role="dialog" aria-labelledby={titleId} ref={popoverRef}>
             <div className="citation-head">
+              <span className="citation-file-icon" aria-hidden="true">
+                <FileIcon />
+              </span>
               <strong className="citation-title" id={titleId}>{source.filename || "Document"}</strong>
               <button
                 type="button"
@@ -125,7 +129,7 @@ export function Citation({
                 aria-label="Close source"
                 onClick={closeAndReturnFocus}
               >
-                ×
+                <CloseIcon />
               </button>
             </div>
             {where && <div className="citation-place">{where}</div>}

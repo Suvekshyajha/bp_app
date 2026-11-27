@@ -1,5 +1,6 @@
 import type { Conversation } from "../types";
 import type { ListStatus } from "../hooks/useConversations";
+import { ChatIcon, InfoIcon, LogoutIcon, PlusIcon, TrashIcon } from "./Icons";
 
 export function Sidebar({
   conversations,
@@ -32,9 +33,9 @@ export function Sidebar({
 }) {
   return (
     <aside className="sidebar" aria-label="Conversations">
-      <div className="sidebar-brand"><div className="brand-mark">I</div><span>Info<strong>mate</strong></span></div>
+      <div className="sidebar-brand"><div className="brand-mark">I</div><span className="brand-name">Info<strong>Mate</strong></span></div>
       <button type="button" className="new-chat-button" onClick={onNew} disabled={locked}>
-        <span aria-hidden="true">＋</span> New chat
+        <PlusIcon /> New chat
       </button>
       <div className="conversation-heading">YOUR CHATS <span>{conversations.length}{hasMore ? "+" : ""}</span></div>
       <nav className="conversation-nav" aria-label="Your conversations">
@@ -47,7 +48,7 @@ export function Sidebar({
               onClick={() => onSelect(conversation.id)}
               disabled={locked}
             >
-              <span className="conversation-icon" aria-hidden="true">◷</span>
+              <span className="conversation-icon" aria-hidden="true"><ChatIcon /></span>
               <span className="conversation-title">{conversation.title}</span>
             </button>
             <button
@@ -57,7 +58,7 @@ export function Sidebar({
               title="Delete conversation"
               onClick={() => onDelete(conversation.id)}
               disabled={locked}
-            >×</button>
+            ><TrashIcon /></button>
           </div>
         ))}
         {status === "loading" && <p className="list-note">Loading chats…</p>}
@@ -74,11 +75,11 @@ export function Sidebar({
         )}
       </nav>
       <div className="sidebar-bottom">
-        <div className="demo-note"><span aria-hidden="true">ⓘ</span><p>Your chats are saved on the server and load as you scroll.</p></div>
+        <div className="demo-note"><InfoIcon /><p>Your chats are saved on the server and load as you scroll.</p></div>
         <div className="account-row">
           <div className="account-avatar" aria-hidden="true">{displayName.slice(0, 1).toUpperCase()}</div>
           <div className="account-copy"><strong>{displayName}</strong><span>Local demo account</span></div>
-          <button type="button" className="logout-button" onClick={onLogout} disabled={locked} aria-label="Log out" title="Log out">↗</button>
+          <button type="button" className="logout-button" onClick={onLogout} disabled={locked} aria-label="Log out" title="Log out"><LogoutIcon /></button>
         </div>
       </div>
     </aside>
